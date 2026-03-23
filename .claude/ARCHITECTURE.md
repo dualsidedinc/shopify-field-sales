@@ -7,6 +7,7 @@
 │                              MERCHANT SIDE                                   │
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │                     Shopify Admin                                    │    │
+│  │  ┌──────────────────┐    ┌──────────────────┐                       │    │
 │  │  │ Shopify Embedded │    │   Shopify B2B    │                       │    │
 │  │  │   Config App     │◄───│   Companies      │                       │    │
 │  │  │  (Polaris/Vite)  │    │   Products       │                       │    │
