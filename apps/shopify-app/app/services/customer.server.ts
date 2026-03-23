@@ -1,4 +1,5 @@
 import prisma from "../db.server";
+import { toGid, fromGid } from "../lib/shopify-ids";
 
 // =============================================================================
 // Shopify Customer Sync Service
@@ -164,8 +165,8 @@ export async function syncContactToShopifyCustomer(
 
   // If already synced, verify and return
   if (contact.shopifyCustomerId) {
-    // Verify customer still exists in Shopify
-    const verified = await verifyShopifyCustomer(contact.shopifyCustomerId, admin);
+    // Verify customer still exists in Shopify (convert numeric ID to GID for query)
+    const verified = await verifyShopifyCustomer(toGid("Customer", contact.shopifyCustomerId), admin);
     if (verified) {
       return { success: true, shopifyCustomerId: contact.shopifyCustomerId };
     }
@@ -177,12 +178,13 @@ export async function syncContactToShopifyCustomer(
     const existingCustomer = await findCustomerByEmail(contact.email, admin);
 
     if (existingCustomer) {
-      // Link to existing customer
+      // Link to existing customer (extract numeric ID from GID)
+      const numericCustomerId = fromGid(existingCustomer.id);
       await prisma.companyContact.update({
         where: { id: contactId },
-        data: { shopifyCustomerId: existingCustomer.id },
+        data: { shopifyCustomerId: numericCustomerId },
       });
-      return { success: true, shopifyCustomerId: existingCustomer.id };
+      return { success: true, shopifyCustomerId: numericCustomerId };
     }
 
     // Create new customer
@@ -212,12 +214,15 @@ export async function syncContactToShopifyCustomer(
       return { success: false, error: errors.map((e) => e.message).join(", ") };
     }
 
-    const shopifyCustomerId = result.data?.customerCreate?.customer?.id;
-    if (!shopifyCustomerId) {
+    const shopifyCustomerGid = result.data?.customerCreate?.customer?.id;
+    if (!shopifyCustomerGid) {
       return { success: false, error: "Failed to create customer in Shopify" };
     }
 
-    // Update contact with Shopify customer ID
+    // Extract numeric ID from GID for storage
+    const shopifyCustomerId = fromGid(shopifyCustomerGid);
+
+    // Update contact with Shopify customer ID (numeric)
     await prisma.companyContact.update({
       where: { id: contactId },
       data: { shopifyCustomerId },
@@ -306,7 +311,7 @@ export async function getCustomerPaymentMethods(
 ): Promise<{ success: true; paymentMethods: CustomerPaymentMethod[] } | { success: false; error: string }> {
   try {
     const response = await admin.graphql(CUSTOMER_PAYMENT_METHODS_QUERY, {
-      variables: { customerId: shopifyCustomerId },
+      variables: { customerId: toGid("Customer", shopifyCustomerId) },
     });
 
     const result: {
@@ -351,7 +356,7 @@ export async function getCustomerWithPaymentMethods(
 ): Promise<SyncedCustomer | null> {
   try {
     const response = await admin.graphql(CUSTOMER_QUERY, {
-      variables: { id: shopifyCustomerId },
+      variables: { id: toGid("Customer", shopifyCustomerId) },
     });
 
     const result: {

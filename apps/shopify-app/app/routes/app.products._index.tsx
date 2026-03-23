@@ -6,6 +6,7 @@ import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
 import type { ProductStatus } from "@prisma/client";
+import { fromGid } from "../lib/shopify-ids";
 
 type AdminGraphQL = {
   graphql: (query: string, options?: { variables: Record<string, unknown> }) => Promise<Response>;
@@ -283,9 +284,12 @@ async function syncProductsFromShopify(
           ? tags.some((t: string) => t.toLowerCase() === inclusionTag)
           : false;
 
+        // Extract numeric ID from Shopify GID
+        const shopifyProductId = fromGid(node.id);
+
         const existing = await prisma.product.findUnique({
           where: {
-            shopId_shopifyProductId: { shopId, shopifyProductId: node.id },
+            shopId_shopifyProductId: { shopId, shopifyProductId },
           },
           select: { enabledForFieldApp: true },
         });
@@ -294,11 +298,11 @@ async function syncProductsFromShopify(
 
         const product = await prisma.product.upsert({
           where: {
-            shopId_shopifyProductId: { shopId, shopifyProductId: node.id },
+            shopId_shopifyProductId: { shopId, shopifyProductId },
           },
           create: {
             shopId,
-            shopifyProductId: node.id,
+            shopifyProductId,
             title: node.title,
             description: node.descriptionHtml,
             imageUrl: node.featuredImage?.url ?? null,
@@ -326,16 +330,17 @@ async function syncProductsFromShopify(
 
         for (const variantEdge of node.variants.edges) {
           const v = variantEdge.node;
+          const shopifyVariantId = fromGid(v.id);
           await prisma.productVariant.upsert({
             where: {
               productId_shopifyVariantId: {
                 productId: product.id,
-                shopifyVariantId: v.id,
+                shopifyVariantId,
               },
             },
             create: {
               productId: product.id,
-              shopifyVariantId: v.id,
+              shopifyVariantId,
               title: v.title,
               sku: v.sku,
               priceCents: Math.round(parseFloat(v.price) * 100),

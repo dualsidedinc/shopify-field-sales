@@ -3,6 +3,7 @@ import { useLoaderData, useNavigate, useActionData, Form } from "react-router";
 import { authenticate } from "../shopify.server";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import prisma from "../db.server";
+import { toGid } from "../lib/shopify-ids";
 
 interface Location {
   id: string;
@@ -170,7 +171,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   if (company.shopifyCompanyId) {
     try {
       const response = await admin.graphql(COMPANY_PAYMENT_TERMS_QUERY, {
-        variables: { id: company.shopifyCompanyId },
+        variables: { id: toGid("Company", company.shopifyCompanyId) },
       });
       const result = (await response.json()) as ShopifyPaymentTermsResponse;
       const paymentTermsTemplate =

@@ -1,6 +1,7 @@
 import prisma from "../db.server";
 import type { PaymentTerms } from "@prisma/client";
 import { findTerritoryByLocation } from "./territory.server";
+import { fromGid } from "../lib/shopify-ids";
 
 // GraphQL query to fetch all companies with locations
 const COMPANIES_QUERY = `#graphql
@@ -149,12 +150,15 @@ export async function importCompaniesFromShopify(
       const companies = result.data.companies;
 
       for (const { node: company } of companies.edges) {
+        // Extract numeric ID from Shopify GID
+        const shopifyCompanyId = fromGid(company.id);
+
         // Check if company already exists
         const existing = await prisma.company.findUnique({
           where: {
             shopId_shopifyCompanyId: {
               shopId,
-              shopifyCompanyId: company.id,
+              shopifyCompanyId,
             },
           },
         });
@@ -164,12 +168,12 @@ export async function importCompaniesFromShopify(
           where: {
             shopId_shopifyCompanyId: {
               shopId,
-              shopifyCompanyId: company.id,
+              shopifyCompanyId,
             },
           },
           create: {
             shopId,
-            shopifyCompanyId: company.id,
+            shopifyCompanyId,
             name: company.name,
             accountNumber: company.externalId || null,
             syncStatus: "SYNCED",
@@ -194,17 +198,18 @@ export async function importCompaniesFromShopify(
         // Process locations
         for (const { node: location } of company.locations.edges) {
           const address = location.shippingAddress || location.billingAddress;
+          const shopifyLocationId = fromGid(location.id);
 
           const upsertedLocation = await prisma.companyLocation.upsert({
             where: {
               companyId_shopifyLocationId: {
                 companyId: upsertedCompany.id,
-                shopifyLocationId: location.id,
+                shopifyLocationId,
               },
             },
             create: {
               companyId: upsertedCompany.id,
-              shopifyLocationId: location.id,
+              shopifyLocationId,
               name: location.name,
               address1: address?.address1 || null,
               address2: address?.address2 || null,
@@ -243,6 +248,9 @@ export async function importCompaniesFromShopify(
         for (const { node: contact } of company.contacts.edges) {
           if (!contact.customer?.email) continue;
 
+          const shopifyContactId = fromGid(contact.id);
+          const shopifyCustomerId = fromGid(contact.customer.id);
+
           await prisma.companyContact.upsert({
             where: {
               companyId_email: {
@@ -252,8 +260,8 @@ export async function importCompaniesFromShopify(
             },
             create: {
               companyId: upsertedCompany.id,
-              shopifyContactId: contact.id,
-              shopifyCustomerId: contact.customer.id,
+              shopifyContactId,
+              shopifyCustomerId,
               firstName: contact.customer.firstName || "",
               lastName: contact.customer.lastName || "",
               email: contact.customer.email,
@@ -262,8 +270,8 @@ export async function importCompaniesFromShopify(
               canPlaceOrders: true,
             },
             update: {
-              shopifyContactId: contact.id,
-              shopifyCustomerId: contact.customer.id,
+              shopifyContactId,
+              shopifyCustomerId,
               firstName: contact.customer.firstName || "",
               lastName: contact.customer.lastName || "",
               phone: contact.customer.phone || null,
