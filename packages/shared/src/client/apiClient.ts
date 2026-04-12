@@ -285,13 +285,21 @@ export interface CompanyPaymentMethod {
 
 // Tax Calculation
 export interface TaxCalculationRequest {
-  shippingLocationId: string;
   lineItems: {
-    shopifyVariantId: string;
+    shopifyVariantId?: string | null;
+    title: string;
     quantity: number;
     unitPriceCents: number;
   }[];
-  shippingCents: number;
+  shippingAddress?: {
+    address1?: string | null;
+    city?: string | null;
+    province?: string | null;
+    zip?: string | null;
+    countryCode?: string;
+  } | null;
+  customerId?: string | null;
+  shippingCents?: number;
 }
 
 export interface TaxCalculationResponse {
