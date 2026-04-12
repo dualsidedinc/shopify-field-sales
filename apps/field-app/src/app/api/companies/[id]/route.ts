@@ -161,23 +161,7 @@ export async function PUT(request: Request, { params }: RouteParams) {
       },
     });
 
-    const result: Company = {
-      id: updated.id,
-      shopId: updated.shopId,
-      shopifyCompanyId: updated.shopifyCompanyId,
-      name: updated.name,
-      accountNumber: updated.accountNumber,
-      paymentTerms: updated.paymentTerms,
-      territoryId: updated.territoryId,
-      assignedRepId: updated.assignedRepId,
-      syncStatus: updated.syncStatus,
-      lastSyncedAt: updated.lastSyncedAt,
-      isActive: updated.isActive,
-      createdAt: updated.createdAt,
-      updatedAt: updated.updatedAt,
-    };
-
-    return NextResponse.json({ data: result, error: null });
+    return NextResponse.json({ data: updated, error: null });
   } catch (error) {
     console.error('Error updating company:', error);
     return NextResponse.json<ApiError>(
