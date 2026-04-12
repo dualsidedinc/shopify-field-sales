@@ -59,8 +59,6 @@ services:
         value: 1h
       - key: REFRESH_TOKEN_EXPIRES_IN
         value: 7d
-      - key: NEXT_PUBLIC_APP_URL
-        sync: false
 
 databases:
   - name: field-sales-db

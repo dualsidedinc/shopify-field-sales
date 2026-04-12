@@ -1,0 +1,38 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "6ace764e1521a6d126490f8dcdfd74c2"
+name = "Field Sales Manager"
+application_url = "https://field-sales-admin.dualsidedapp.com"
+embedded = true
+
+[webhooks]
+api_version = "2026-04"
+
+  [[webhooks.subscriptions]]
+  topics = [
+  "company_locations/create",
+  "company_locations/update",
+  "company_locations/delete"
+]
+  uri = "https://field-sales-admin.dualsidedapp.com/webhooks/company-locations"
+
+  [[webhooks.subscriptions]]
+  topics = [ "companies/create", "companies/delete", "companies/update" ]
+  uri = "https://field-sales-admin.dualsidedapp.com/webhooks/companies"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/scopes_update" ]
+  uri = "https://field-sales-admin.dualsidedapp.com/webhooks/app/scopes_update"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app/uninstalled" ]
+  uri = "https://field-sales-admin.dualsidedapp.com/webhooks/app/uninstalled"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_companies,write_companies,read_customers,read_customer_payment_methods,write_draft_orders,read_files,read_orders,write_orders,write_payment_mandate"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [ "https://field-sales-admin.dualsidedapp.com/api/auth" ]

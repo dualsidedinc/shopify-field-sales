@@ -117,8 +117,6 @@ JWT_SECRET="your-random-secret-minimum-32-characters"
 JWT_EXPIRES_IN="1h"
 REFRESH_TOKEN_EXPIRES_IN="7d"
 
-# App URL
-NEXT_PUBLIC_APP_URL="http://localhost:3001"
 ```
 
 ### 5. Initialize Database
@@ -257,7 +255,6 @@ This monorepo is configured for Render deployment using a Blueprint (`render.yam
 | `SHOPIFY_API_KEY` | shopify-app | From Shopify Partner Dashboard |
 | `SHOPIFY_API_SECRET` | shopify-app | From Shopify Partner Dashboard |
 | `SHOPIFY_APP_URL` | shopify-app | Your Render service URL |
-| `NEXT_PUBLIC_APP_URL` | field-app | Your Render service URL |
 
 5. Click **Apply** to deploy
 

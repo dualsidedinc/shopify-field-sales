@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
-client_id = "6ace764e1521a6d126490f8dcdfd74c2"
-name = "Field Sales Manager"
+client_id = "f9fd79decc414b88daa949015eab027a"
+name = "Field Sales Manager DEV"
 application_url = "https://example.com"
 embedded = true
 
@@ -9,19 +9,7 @@ embedded = true
 automatically_update_urls_on_dev = true
 
 [webhooks]
-api_version = "2026-01"
-
-  [[webhooks.subscriptions]]
-  topics = [ "companies/create", "companies/update", "companies/delete" ]
-  uri = "/webhooks/companies"
-
-  [[webhooks.subscriptions]]
-  topics = [
-  "company_locations/update",
-  "company_locations/delete",
-  "company_locations/create"
-]
-  uri = "/webhooks/company-locations"
+api_version = "2026-04"
 
   [[webhooks.subscriptions]]
   topics = [ "app/scopes_update" ]
@@ -31,9 +19,23 @@ api_version = "2026-01"
   topics = [ "app/uninstalled" ]
   uri = "/webhooks/app/uninstalled"
 
+  [[webhooks.subscriptions]]
+  topics = [ "companies/create", "companies/delete", "companies/update" ]
+  uri = "/webhooks/companies"
+
+  [[webhooks.subscriptions]]
+  topics = [
+  "company_locations/create",
+  "company_locations/delete",
+  "company_locations/update"
+]
+  uri = "/webhooks/company-locations"
+
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_files,read_companies,read_customers,read_orders,write_companies,write_draft_orders,write_orders,read_customer_payment_methods,write_payment_mandate"
+scopes = "read_files,read_companies,read_customers,read_orders,write_companies,write_draft_orders,write_orders,write_payment_mandate"
+optional_scopes = [ ]
+use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://example.com/api/auth" ]
+redirect_urls = [ ]

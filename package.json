@@ -6,6 +6,9 @@
     "packages/*",
     "apps/*"
   ],
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.40.0"
+  },
   "scripts": {
     "db:generate": "npm run db:generate --workspace=@field-sales/database",
     "db:push": "npm run db:push --workspace=@field-sales/database",
