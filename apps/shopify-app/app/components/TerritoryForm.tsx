@@ -8,6 +8,7 @@ interface StateOption {
 
 export interface TerritoryFormData {
   name: string;
+  code: string;
   description: string;
   stateCodes: string[];
   zipcodes: string[];
@@ -16,6 +17,7 @@ export interface TerritoryFormData {
 interface TerritoryData {
   id?: string;
   name: string;
+  code: string | null;
   description: string | null;
   stateCodes: string[];
   zipcodes: string[];
@@ -31,6 +33,7 @@ interface TerritoryFormProps {
 
 const defaultValues: TerritoryFormData = {
   name: "",
+  code: "",
   description: "",
   stateCodes: [],
   zipcodes: [],
@@ -40,6 +43,7 @@ function territoryToFormData(territory?: TerritoryData): TerritoryFormData {
   if (!territory) return defaultValues;
   return {
     name: territory.name || "",
+    code: territory.code || "",
     description: territory.description || "",
     stateCodes: territory.stateCodes || [],
     zipcodes: territory.zipcodes || [],
@@ -185,6 +189,16 @@ export function TerritoryForm({
               updateField("name", target.value);
             }}
             required
+          />
+
+          <s-text-field
+            label="Territory Code"
+            value={formData.code}
+            onInput={(e: Event) => {
+              const target = e.target as HTMLInputElement;
+              updateField("code", target.value);
+            }}
+            placeholder="Optional identifier (e.g., WEST-001)"
           />
 
           <s-text-field

@@ -47,14 +47,27 @@ export async function GET(request: Request) {
     const page = Math.max(1, parseInt(searchParams.get('page') || '1'));
     const pageSize = Math.min(100, Math.max(1, parseInt(searchParams.get('pageSize') || '20')));
     const companyId = searchParams.get('companyId');
+    const status = searchParams.get('status');
+    const query = searchParams.get('query')?.trim();
 
     const skip = (page - 1) * pageSize;
 
+    // Build where clause with search and filters
     const where = {
       shopId,
       deletedAt: null, // Exclude soft-deleted orders
       ...(role === 'REP' && { salesRepId: repId }),
-      ...(companyId && { companyId: companyId }),
+      ...(companyId && { companyId }),
+      ...(status && { status: status as 'DRAFT' | 'AWAITING_REVIEW' | 'PENDING' | 'PAID' | 'REFUNDED' }),
+      // Search by order number or company name
+      ...(query && {
+        OR: [
+          { orderNumber: { contains: query, mode: 'insensitive' as const } },
+          { shopifyOrderNumber: { contains: query, mode: 'insensitive' as const } },
+          { company: { name: { contains: query, mode: 'insensitive' as const } } },
+          { poNumber: { contains: query, mode: 'insensitive' as const } },
+        ],
+      }),
     };
 
     const [orders, totalItems] = await Promise.all([

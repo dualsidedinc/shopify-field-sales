@@ -100,9 +100,6 @@ export function StatusActions({
 
   return (
     <>
-      <div className="card">
-        <h2 className="font-semibold text-gray-900 mb-4">Actions</h2>
-
         <div className="space-y-3">
           {/* Submit for Approval - DRAFT orders */}
           {status === 'DRAFT' && onSubmitForApproval && (
@@ -176,12 +173,12 @@ export function StatusActions({
                 disabled={isSubmitting}
                 className="w-full text-red-600 text-sm font-medium hover:text-red-700"
               >
+
                 Delete Order
               </button>
             </div>
           )}
         </div>
-      </div>
 
       {/* Submit for Approval Modal */}
       <BottomSheet

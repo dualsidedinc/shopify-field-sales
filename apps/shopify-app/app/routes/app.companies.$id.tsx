@@ -756,7 +756,7 @@ export default function CompanyDetailPage() {
         </s-stack>
       </s-section>
 
-      {/* Payment Methods Section */}
+      {/* Payment Methods Section
       <s-section>
         <s-stack gap="base">
           <s-stack direction="inline" gap="base" justifyContent="space-between" alignItems="center">
@@ -822,6 +822,7 @@ export default function CompanyDetailPage() {
           )}
         </s-stack>
       </s-section>
+     */}
 
       {/* Danger Zone - only for internal companies */}
       {!isShopifyManaged && (

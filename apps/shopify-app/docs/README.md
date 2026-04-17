@@ -23,6 +23,7 @@ This app runs inside the Shopify Admin and handles:
 | [Pickers](./pickers.md) | Company, Contact, Location picker components |
 | [Territories](./territories.md) | Geographic regions, location assignment |
 | [Companies](./companies.md) | B2B accounts, contacts, locations, payment methods |
+| [Leads](./leads.md) | Public lead capture form, form builder, Google Places |
 | [Sales Reps](./sales-reps.md) | Rep management, territory access |
 | [Billing](./billing.md) | App subscription plans, usage tracking |
 
@@ -67,7 +68,9 @@ This app is the **only** component that interacts with Shopify APIs:
 - `app.companies.*` - Company management
 - `app.orders.*` - Order management
 - `app.products.*` - Product configuration
+- `app.leads.*` - Lead capture and form builder
 - `app.billing.*` - Billing management
+- `proxy.lead-form.tsx` - Public lead form (App Proxy)
 
 ### Services
 | Service | Purpose |
@@ -82,6 +85,8 @@ This app is the **only** component that interacts with Shopify APIs:
 | `salesRep.server.ts` | Rep management |
 | `billing.server.ts` | Subscription billing |
 | `customer.server.ts` | Customer sync |
+| `lead.server.ts` | Lead form fields, submissions |
+| `metafield.server.ts` | Shopify metafield definitions and order metadata |
 | `webhook.server.ts` | Webhook processing |
 
 ## Scheduled Jobs (GitHub Actions)

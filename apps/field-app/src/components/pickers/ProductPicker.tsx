@@ -4,14 +4,25 @@ import { useState, useEffect, useCallback } from 'react';
 import { BottomSheet } from '../ui/BottomSheet';
 import { api } from '@/lib/api';
 
+export interface PriceBreak {
+  minimumQuantity: number;
+  priceCents: number;
+}
+
 export interface ProductVariant {
   id: string;
   shopifyVariantId: string;
   title: string;
   sku: string | null;
   priceCents: number;
+  basePriceCents?: number;
   available: boolean;
   inventoryQuantity: number | null;
+  // Quantity rules from B2B catalog
+  quantityMin?: number | null;
+  quantityMax?: number | null;
+  quantityIncrement?: number | null;
+  priceBreaks?: PriceBreak[];
 }
 
 export interface Product {
@@ -31,13 +42,21 @@ export interface SelectedProduct {
   variantTitle: string;
   sku: string | null;
   priceCents: number;
+  basePriceCents: number;
   imageUrl: string | null;
+  // Quantity rules from B2B catalog
+  quantityMin: number | null;
+  quantityMax: number | null;
+  quantityIncrement: number | null;
+  priceBreaks: PriceBreak[];
 }
 
 interface ProductPickerProps {
   onSelect: (product: SelectedProduct) => void;
   disabled?: boolean;
   buttonLabel?: string;
+  /** Company location ID for catalog-specific pricing and quantity rules */
+  companyLocationId?: string | null;
 }
 
 interface ProductItem {
@@ -52,6 +71,7 @@ export function ProductPicker({
   onSelect,
   disabled = false,
   buttonLabel = 'Add Product',
+  companyLocationId,
 }: ProductPickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -65,6 +85,8 @@ export function ProductPicker({
       const { data } = await api.client.products.list({
         pageSize: 50,
         query: query || undefined,
+        // Pass company location for catalog-specific pricing and quantity rules
+        companyLocationId: companyLocationId || undefined,
       });
 
       if (data?.items) {
@@ -75,7 +97,7 @@ export function ProductPicker({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [companyLocationId]);
 
   // Load products when sheet opens
   useEffect(() => {
@@ -107,6 +129,7 @@ export function ProductPicker({
   };
 
   const handleVariantSelect = (product: ProductItem, variant: ProductVariant) => {
+    const basePriceCents = variant.basePriceCents ?? variant.priceCents;
     const selected: SelectedProduct = {
       productId: product.id,
       variantId: variant.id,
@@ -116,7 +139,13 @@ export function ProductPicker({
       variantTitle: variant.title !== 'Default Title' ? variant.title : '',
       sku: variant.sku,
       priceCents: variant.priceCents,
+      basePriceCents,
       imageUrl: product.imageUrl,
+      // Quantity rules from B2B catalog
+      quantityMin: variant.quantityMin ?? null,
+      quantityMax: variant.quantityMax ?? null,
+      quantityIncrement: variant.quantityIncrement ?? null,
+      priceBreaks: variant.priceBreaks ?? [],
     };
 
     // Add immediately and close

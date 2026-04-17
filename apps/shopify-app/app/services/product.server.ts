@@ -2,6 +2,7 @@ import prisma from "../db.server";
 import {
   getCatalogPricingForLocation,
   getAvailableVariantsForLocation,
+  type CatalogPricing,
 } from "./catalog.server";
 
 export interface ProductVariantResult {
@@ -16,6 +17,12 @@ export interface ProductVariantResult {
   basePriceCents: number;
   hasCatalogPrice: boolean;
   isInCatalog: boolean;
+  // Quantity rules (from catalog, if applicable)
+  quantityMin: number | null;
+  quantityMax: number | null;
+  quantityIncrement: number | null;
+  // Volume pricing tiers
+  priceBreaks: Array<{ minimumQuantity: number; priceCents: number }>;
 }
 
 export interface ProductQueryOptions {
@@ -53,7 +60,7 @@ export async function getEnabledProducts(
   });
 
   // Get catalog pricing if a location is specified
-  let catalogPricing: Map<string, { priceCents: number; compareAtPriceCents: number | null }> | null = null;
+  let catalogPricing: Map<string, CatalogPricing> | null = null;
   let availableVariants: Set<string> | null = null;
   const hasCatalog = !!options?.companyLocationId;
 
@@ -89,6 +96,12 @@ export async function getEnabledProducts(
         priceCents: catalogPrice?.priceCents ?? variant.priceCents,
         hasCatalogPrice: !!catalogPrice,
         isInCatalog,
+        // Quantity rules from catalog
+        quantityMin: catalogPrice?.quantityMin ?? null,
+        quantityMax: catalogPrice?.quantityMax ?? null,
+        quantityIncrement: catalogPrice?.quantityIncrement ?? null,
+        // Volume pricing
+        priceBreaks: catalogPrice?.priceBreaks ?? [],
       });
     }
   }
@@ -133,7 +146,7 @@ export async function searchProducts(
   });
 
   // Get catalog pricing if a location is specified
-  let catalogPricing: Map<string, { priceCents: number; compareAtPriceCents: number | null }> | null = null;
+  let catalogPricing: Map<string, CatalogPricing> | null = null;
   let availableVariants: Set<string> | null = null;
   const hasCatalog = !!options?.companyLocationId;
 
@@ -175,6 +188,12 @@ export async function searchProducts(
           priceCents: catalogPrice?.priceCents ?? variant.priceCents,
           hasCatalogPrice: !!catalogPrice,
           isInCatalog,
+          // Quantity rules from catalog
+          quantityMin: catalogPrice?.quantityMin ?? null,
+          quantityMax: catalogPrice?.quantityMax ?? null,
+          quantityIncrement: catalogPrice?.quantityIncrement ?? null,
+          // Volume pricing
+          priceBreaks: catalogPrice?.priceBreaks ?? [],
         });
       }
     }

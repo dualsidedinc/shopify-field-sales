@@ -202,6 +202,8 @@ export function OrderForm({
   // Handle adding a product from picker
   const handleAddProduct = useCallback(
     (product: SelectedProduct) => {
+      // Use quantityMin as initial quantity, defaulting to 1
+      const initialQuantity = product.quantityMin ?? 1;
       const newItem: Omit<OrderLineItem, 'id' | 'discountCents' | 'totalCents'> = {
         shopifyProductId: product.shopifyProductId,
         shopifyVariantId: product.shopifyVariantId,
@@ -209,8 +211,14 @@ export function OrderForm({
         title: product.title,
         variantTitle: product.variantTitle || null,
         imageUrl: product.imageUrl,
-        quantity: 1, // Default quantity of 1 when adding
+        quantity: initialQuantity,
         unitPriceCents: product.priceCents,
+        basePriceCents: product.basePriceCents,
+        // Quantity rules from B2B catalog
+        quantityMin: product.quantityMin,
+        quantityMax: product.quantityMax,
+        quantityIncrement: product.quantityIncrement,
+        priceBreaks: product.priceBreaks,
       };
       addLineItem(newItem);
       // Promotions will be re-evaluated by the useEffect when lineItems.length changes
@@ -582,6 +590,7 @@ export function OrderForm({
           onUpdateQuantity={handleUpdateQuantity}
           onRemoveItem={handleRemoveItem}
           readonly={isReadonly}
+          companyLocationId={formData.shippingLocation?.id}
         />
 
         {/* Order Summary */}

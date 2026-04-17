@@ -14,6 +14,7 @@ Territories define geographic regions for sales rep assignment. Company location
   id: string;
   shopId: string;
   name: string;
+  code?: string;                 // Optional identifier (e.g., "WEST-001")
   description?: string;
   isActive: boolean;
   states: TerritoryState[];      // State coverage
@@ -22,6 +23,15 @@ Territories define geographic regions for sales rep assignment. Company location
   repTerritories: RepTerritory[]; // Assigned reps
 }
 ```
+
+### Territory Code
+
+The optional `code` field provides a business identifier for the territory. This is useful for:
+- Integration with external systems (ERP, CRM)
+- Reporting and analytics
+- Sales rep assignment tracking
+
+The territory code is automatically set as a Shopify order metafield when orders are placed. See [Orders](./orders.md#order-metafields) for details.
 
 ### TerritoryState
 ```typescript
@@ -100,13 +110,36 @@ await realignAllLocationsToTerritories(shopId);
 | `getTerritories(shopId)` | List all territories with counts |
 | `getActiveTerritories(shopId)` | Active territories (for dropdowns) |
 | `getTerritoryById(shopId, id)` | Territory details with relations |
-| `createTerritory(input)` | Create territory with states/zips/reps |
-| `updateTerritory(shopId, id, input)` | Update territory |
+| `createTerritory(input)` | Create territory with states/zips/reps/code |
+| `updateTerritory(shopId, id, input)` | Update territory (including code) |
 | `deactivateTerritory(shopId, id)` | Soft delete |
 | `activateTerritory(shopId, id)` | Reactivate |
 | `findTerritoryByLocation(...)` | Match location to territory |
 | `realignAllLocationsToTerritories(...)` | Bulk realign |
 | `getTerritoryAlignmentReport(...)` | Coverage analysis |
+
+### Territory Input Types
+
+```typescript
+interface CreateTerritoryInput {
+  shopId: string;
+  name: string;
+  code?: string | null;        // Optional territory code
+  description?: string | null;
+  stateCodes?: string[];
+  zipcodes?: string[];
+  repIds?: string[];
+}
+
+interface UpdateTerritoryInput {
+  name?: string;
+  code?: string | null;        // Update territory code
+  description?: string | null;
+  stateCodes?: string[];
+  zipcodes?: string[];
+  repIds?: string[];
+}
+```
 
 ## Alignment Report
 

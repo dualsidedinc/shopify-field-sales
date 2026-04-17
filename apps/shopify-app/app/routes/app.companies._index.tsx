@@ -139,9 +139,10 @@ export default function CompaniesPage() {
 
   return (
     <s-page heading="Companies">
-      <s-button slot="secondary-actions" onClick={handleImport} disabled={isImporting}>
-        {isImporting ? "Importing..." : "Import from Shopify"}
+      <s-button slot="secondary-actions" href="/app/leads">
+        Leads
       </s-button>
+
       <s-link slot="secondary-actions" href={hasManagedCompanies ? "shopify://admin/companies/new" : "/app/companies/create"}>
         Add Company
       </s-link>

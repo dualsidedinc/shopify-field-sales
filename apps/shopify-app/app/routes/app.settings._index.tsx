@@ -1,5 +1,6 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "react-router";
 import { useLoaderData, useFetcher } from "react-router";
+import { authenticate } from "../shopify.server";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAppBridge, SaveBar } from "@shopify/app-bridge-react";
 import { getAuthenticatedShop } from "../services/shop.server";
@@ -24,6 +25,17 @@ import {
   type Promotion,
 } from "../services/promotion.server";
 import type { PromotionType } from "@field-sales/database";
+import { syncShop, type SyncObjectType } from "../services/sync.server";
+import { ensureOrderMetafieldDefinitions } from "../services/metafield.server";
+
+interface SyncStatus {
+  productCount: number;
+  companyCount: number;
+  catalogCount: number;
+  lastProductSync: string | null;
+  lastCompanySync: string | null;
+  lastCatalogSync: string | null;
+}
 
 interface LoaderData {
   shopId: string;
@@ -33,14 +45,33 @@ interface LoaderData {
   orderNumberStart: number;
   shippingMethods: ShippingMethod[];
   promotions: Promotion[];
+  syncStatus: SyncStatus;
 }
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { shop } = await getAuthenticatedShop(request);
 
-  const [shippingMethods, promotions] = await Promise.all([
+  const [shippingMethods, promotions, productCount, companyCount, catalogCount, lastProductSync, lastCompanySync, lastCatalogSync] = await Promise.all([
     getShippingMethods(shop.id),
     getPromotions(shop.id),
+    prisma.product.count({ where: { shopId: shop.id } }),
+    prisma.company.count({ where: { shopId: shop.id } }),
+    prisma.catalog.count({ where: { shopId: shop.id } }),
+    prisma.product.findFirst({
+      where: { shopId: shop.id },
+      orderBy: { syncedAt: "desc" },
+      select: { syncedAt: true },
+    }),
+    prisma.company.findFirst({
+      where: { shopId: shop.id },
+      orderBy: { lastSyncedAt: "desc" },
+      select: { lastSyncedAt: true },
+    }),
+    prisma.catalog.findFirst({
+      where: { shopId: shop.id },
+      orderBy: { syncedAt: "desc" },
+      select: { syncedAt: true },
+    }),
   ]);
 
   return {
@@ -51,6 +82,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     orderNumberStart: shop.orderNumberStart,
     shippingMethods,
     promotions,
+    syncStatus: {
+      productCount,
+      companyCount,
+      catalogCount,
+      lastProductSync: lastProductSync?.syncedAt?.toISOString() || null,
+      lastCompanySync: lastCompanySync?.lastSyncedAt?.toISOString() || null,
+      lastCatalogSync: lastCatalogSync?.syncedAt?.toISOString() || null,
+    },
   };
 };
 
@@ -215,6 +254,54 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       return { success: true, message: "Promotion status updated" };
     }
 
+    // Sync actions
+    if (intent === "syncData") {
+      const objectsParam = formData.get("objects") as string | null;
+      const objects: SyncObjectType[] = objectsParam
+        ? (objectsParam.split(",") as SyncObjectType[])
+        : ["all"];
+
+      const result = await syncShop(shop.id, { objects });
+
+      if (result.success) {
+        const parts: string[] = [];
+        if (result.results.companies) {
+          parts.push(`${result.results.companies.synced} companies`);
+        }
+        if (result.results.products) {
+          parts.push(`${result.results.products.synced} products`);
+        }
+        if (result.results.catalogs) {
+          parts.push(`${result.results.catalogs.synced} catalogs`);
+        }
+        return {
+          success: true,
+          message: `Synced ${parts.join(", ")} in ${(result.duration / 1000).toFixed(1)}s`,
+        };
+      } else {
+        return {
+          success: false,
+          error: result.errors[0] || "Sync failed",
+        };
+      }
+    }
+
+    // Metafield setup action
+    if (intent === "setupMetafields") {
+      const { admin } = await authenticate.admin(request);
+      const result = await ensureOrderMetafieldDefinitions(admin);
+      if (result.success) {
+        // Mark as set up in database
+        await prisma.shop.update({
+          where: { id: shop.id },
+          data: { metafieldsSetupAt: new Date() },
+        });
+        return { success: true, message: "Order metafield definitions created" };
+      } else {
+        return { success: false, error: result.errors?.join(", ") || "Failed to create metafield definitions" };
+      }
+    }
+
     return { success: false, error: "Unknown action" };
   } catch (error) {
     console.error("Settings action error:", error);
@@ -237,10 +324,32 @@ function formatDate(date: Date | string): string {
   });
 }
 
+function formatSyncDate(isoString: string | null): string {
+  if (!isoString) return "Never";
+  const date = new Date(isoString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 export default function SettingsPage() {
-  const { shippingMethods, promotions, orderPrefix, orderNumberStart, logoUrl, accentColor } = useLoaderData<LoaderData>();
+  const { shippingMethods, promotions, orderPrefix, orderNumberStart, logoUrl, accentColor, syncStatus } = useLoaderData<LoaderData>();
   const shopify = useAppBridge();
   const fetcher = useFetcher();
+  const syncFetcher = useFetcher();
 
   const [editingShipping, setEditingShipping] = useState<ShippingMethod | undefined>();
   const [editingPromotion, setEditingPromotion] = useState<Promotion | undefined>();
@@ -298,6 +407,7 @@ export default function SettingsPage() {
 
   // Track if we've processed the current fetcher result
   const lastProcessedData = useRef<unknown>(null);
+  const lastSyncData = useRef<unknown>(null);
 
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data?.message && fetcher.data !== lastProcessedData.current) {
@@ -315,6 +425,27 @@ export default function SettingsPage() {
       }
     }
   }, [fetcher.state, fetcher.data, shopify, prefix, startNumber, logo, accent]);
+
+  // Handle sync response
+  useEffect(() => {
+    if (syncFetcher.state === "idle" && syncFetcher.data && syncFetcher.data !== lastSyncData.current) {
+      lastSyncData.current = syncFetcher.data;
+      if (syncFetcher.data.success) {
+        shopify.toast.show(syncFetcher.data.message);
+      } else {
+        shopify.toast.show(syncFetcher.data.error || "Sync failed", { isError: true });
+      }
+    }
+  }, [syncFetcher.state, syncFetcher.data, shopify]);
+
+  const handleSync = (objects: string) => {
+    syncFetcher.submit(
+      { intent: "syncData", objects },
+      { method: "post" }
+    );
+  };
+
+  const isSyncing = syncFetcher.state !== "idle";
 
   // Load products for the product picker
   const loadProducts = useCallback(async (): Promise<Product[]> => {
@@ -430,32 +561,12 @@ export default function SettingsPage() {
               helpText="Displayed in the app header. Recommended: 400x100px"
             />
 
-            <s-stack gap="small-200">
-              <s-text variant="bodyMd" fontWeight="semibold">Accent Color</s-text>
-              <s-text color="subdued">Used for buttons and interactive elements</s-text>
-              <s-stack direction="inline" gap="base" alignItems="center">
-                <input
-                  type="color"
-                  value={accent}
-                  onChange={(e) => setAccent(e.target.value)}
-                  style={{
-                    width: "48px",
-                    height: "48px",
-                    padding: "0",
-                    border: "1px solid var(--p-color-border)",
-                    borderRadius: "8px",
-                    cursor: "pointer",
-                  }}
-                />
-                <s-text-field
-                  label=""
-                  value={accent}
-                  onInput={(e: Event) => setAccent((e.target as HTMLInputElement).value)}
-                  placeholder="#4F46E5"
-                  style={{ width: "120px" }}
-                />
-              </s-stack>
-            </s-stack>
+            <s-color-field
+              label="Accent Color"
+              value={accent}
+              onChange={(e: Event) => setAccent((e.target as HTMLInputElement).value)}
+              details="Used for buttons and interactive elements"
+            />
           </s-grid>
         </s-stack>
       </s-section>
@@ -617,6 +728,94 @@ export default function SettingsPage() {
                 <s-text color="subdued">No promotions configured. Add one to get started.</s-text>
               </s-box>
             )}
+          </s-stack>
+        </s-section>
+
+        {/* Data Sync Section */}
+        <s-section>
+          <s-stack gap="base">
+            <s-stack gap="small-200">
+              <s-heading>Data Sync</s-heading>
+              <s-text color="subdued">
+                Sync data between Shopify and the Field Sales app. This runs automatically every night.
+              </s-text>
+            </s-stack>
+
+            <s-grid gridTemplateColumns="1fr 1fr 1fr" gap="base">
+              <s-box padding="base" background="subdued" borderRadius="base">
+                <s-stack gap="small-200">
+                  <s-text><strong>Companies</strong></s-text>
+                  <s-text>{syncStatus.companyCount} synced</s-text>
+                  <s-text color="subdued">
+                    Last sync: {formatSyncDate(syncStatus.lastCompanySync)}
+                  </s-text>
+                </s-stack>
+              </s-box>
+              <s-box padding="base" background="subdued" borderRadius="base">
+                <s-stack gap="small-200">
+                  <s-text><strong>Products</strong></s-text>
+                  <s-text>{syncStatus.productCount} synced</s-text>
+                  <s-text color="subdued">
+                    Last sync: {formatSyncDate(syncStatus.lastProductSync)}
+                  </s-text>
+                </s-stack>
+              </s-box>
+              <s-box padding="base" background="subdued" borderRadius="base">
+                <s-stack gap="small-200">
+                  <s-text><strong>Catalogs</strong></s-text>
+                  <s-text>{syncStatus.catalogCount} synced</s-text>
+                  <s-text color="subdued">
+                    Last sync: {formatSyncDate(syncStatus.lastCatalogSync)}
+                  </s-text>
+                </s-stack>
+              </s-box>
+            </s-grid>
+
+            <s-stack direction="inline" gap="small-200">
+              <s-button
+                variant="primary"
+                onClick={() => handleSync("all")}
+                disabled={isSyncing}
+              >
+                {isSyncing ? "Syncing..." : "Sync All Data"}
+              </s-button>
+              <s-button
+                variant="secondary"
+                onClick={() => handleSync("companies")}
+                disabled={isSyncing}
+              >
+                Sync Companies
+              </s-button>
+              <s-button
+                variant="secondary"
+                onClick={() => handleSync("products")}
+                disabled={isSyncing}
+              >
+                Sync Products
+              </s-button>
+              <s-button
+                variant="secondary"
+                onClick={() => handleSync("catalogs")}
+                disabled={isSyncing}
+              >
+                Sync Catalogs
+              </s-button>
+            </s-stack>
+
+            <s-divider />
+
+            <s-stack gap="small-200">
+              <s-text color="subdued">
+                Set up metafield definitions for order tracking (territory, sales rep info).
+              </s-text>
+              <s-button
+                variant="secondary"
+                onClick={() => fetcher.submit({ intent: "setupMetafields" }, { method: "post" })}
+                disabled={fetcher.state !== "idle"}
+              >
+                Setup Order Metafields
+              </s-button>
+            </s-stack>
           </s-stack>
         </s-section>
     </s-page>

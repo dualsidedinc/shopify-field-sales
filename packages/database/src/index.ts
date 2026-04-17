@@ -32,6 +32,8 @@ export type {
   RepQuota,
   BillingPeriod,
   BilledOrder,
+  LeadFormField,
+  Lead,
   // Enums
   PaymentStrategy,
   BillingPlan,
@@ -47,4 +49,6 @@ export type {
   ProductStatus,
   PromotionType,
   PromotionScope,
+  LeadFieldType,
+  LeadStatus,
 } from "@prisma/client";

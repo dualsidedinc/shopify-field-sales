@@ -155,6 +155,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       lastName: data.lastName,
       email: data.email,
       phone: data.phone || null,
+      externalId: data.externalId || null,
       role: data.role || "REP",
       territoryIds: data.territoryIds || [],
       approvalThresholdCents,

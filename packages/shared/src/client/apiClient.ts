@@ -70,6 +70,11 @@ export interface ProductSearchParams extends SearchParams {
   companyLocationId?: string;
 }
 
+export interface ApiPriceBreak {
+  minimumQuantity: number;
+  priceCents: number;
+}
+
 export interface ApiProductVariant {
   id: string;
   shopifyVariantId: string;
@@ -80,6 +85,11 @@ export interface ApiProductVariant {
   hasCatalogPrice: boolean;
   available: boolean;
   inventoryQuantity: number | null;
+  // Quantity rules from B2B catalog (when companyLocationId is provided)
+  quantityMin: number | null;
+  quantityMax: number | null;
+  quantityIncrement: number | null;
+  priceBreaks: ApiPriceBreak[];
 }
 
 export interface ApiProductListItem {

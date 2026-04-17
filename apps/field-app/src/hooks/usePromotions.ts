@@ -177,11 +177,17 @@ export function usePromotions(config?: UsePromotionsConfig): UsePromotionsResult
           imageUrl: null,
           quantity: freeItem.quantity,
           unitPriceCents: freeItem.unitPriceCents,
+          basePriceCents: freeItem.unitPriceCents,
           discountCents: freeItem.unitPriceCents * freeItem.quantity,
           totalCents: 0,
           isFreeItem: true,
           promotionId: freeItem.promotionId,
           promotionName: freeItem.promotionName,
+          // Free items don't have quantity rules
+          quantityMin: null,
+          quantityMax: null,
+          quantityIncrement: null,
+          priceBreaks: [],
         }));
 
         finalLineItems = [...regularItems, ...freeItems];

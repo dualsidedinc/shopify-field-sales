@@ -10,6 +10,8 @@ interface ProductsSectionProps {
   onUpdateQuantity: (itemId: string, quantity: number) => void;
   onRemoveItem: (itemId: string) => void;
   readonly?: boolean;
+  /** Company location ID for catalog-specific pricing and quantity rules */
+  companyLocationId?: string | null;
 }
 
 function formatPrice(cents: number, currency: string = 'USD'): string {
@@ -19,6 +21,25 @@ function formatPrice(cents: number, currency: string = 'USD'): string {
   }).format(cents / 100);
 }
 
+/**
+ * Format quantity rule info for display
+ */
+function getQuantityRuleLabel(item: OrderLineItem): string | null {
+  const parts: string[] = [];
+
+  if (item.quantityMin && item.quantityMin > 1) {
+    parts.push(`Min: ${item.quantityMin}`);
+  }
+  if (item.quantityIncrement && item.quantityIncrement > 1) {
+    parts.push(`Packs of ${item.quantityIncrement}`);
+  }
+  if (item.quantityMax) {
+    parts.push(`Max: ${item.quantityMax}`);
+  }
+
+  return parts.length > 0 ? parts.join(' · ') : null;
+}
+
 export function ProductsSection({
   lineItems,
   currency,
@@ -26,6 +47,7 @@ export function ProductsSection({
   onUpdateQuantity,
   onRemoveItem,
   readonly = false,
+  companyLocationId,
 }: ProductsSectionProps) {
   // Sort items by price descending (free items naturally end up at the bottom)
   const sortedItems = [...lineItems].sort((a, b) => b.totalCents - a.totalCents);
@@ -38,6 +60,7 @@ export function ProductsSection({
           <ProductPicker
             onSelect={onAddProduct}
             buttonLabel="Add Product"
+            companyLocationId={companyLocationId}
           />
         )}
       </div>
@@ -138,38 +161,54 @@ export function ProductsSection({
                   {isFree || readonly ? (
                     <span className="text-sm text-gray-500">Qty: {item.quantity}</span>
                   ) : (
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (item.quantity === 1) {
-                            onRemoveItem(item.id);
-                          } else {
-                            onUpdateQuantity(item.id, item.quantity - 1);
-                          }
-                        }}
-                        className="w-8 h-8 rounded-full border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-100"
-                      >
-                        {item.quantity === 1 ? (
+                    <div className="flex flex-col items-end gap-1">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const increment = item.quantityIncrement ?? 1;
+                            const min = item.quantityMin ?? 1;
+                            const newQty = item.quantity - increment;
+                            if (newQty < min) {
+                              onRemoveItem(item.id);
+                            } else {
+                              onUpdateQuantity(item.id, newQty);
+                            }
+                          }}
+                          className="w-8 h-8 rounded-full border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-100"
+                        >
+                          {item.quantity <= (item.quantityMin ?? 1) ? (
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
+                            </svg>
+                          )}
+                        </button>
+                        <span className="w-8 text-center font-medium">{item.quantity}</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const increment = item.quantityIncrement ?? 1;
+                            const newQty = item.quantity + increment;
+                            // Don't exceed max if set
+                            if (item.quantityMax && newQty > item.quantityMax) return;
+                            onUpdateQuantity(item.id, newQty);
+                          }}
+                          disabled={item.quantityMax !== null && item.quantity >= item.quantityMax}
+                          className="w-8 h-8 rounded-full border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                           </svg>
-                        ) : (
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
-                          </svg>
-                        )}
-                      </button>
-                      <span className="w-8 text-center font-medium">{item.quantity}</span>
-                      <button
-                        type="button"
-                        onClick={() => onUpdateQuantity(item.id, item.quantity + 1)}
-                        className="w-8 h-8 rounded-full border border-gray-300 flex items-center justify-center text-gray-600 hover:bg-gray-100"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                        </svg>
-                      </button>
+                        </button>
+                      </div>
+                      {/* Show quantity rule info */}
+                      {getQuantityRuleLabel(item) && (
+                        <span className="text-xs text-gray-400">{getQuantityRuleLabel(item)}</span>
+                      )}
                     </div>
                   )}
                   {isFree ? (
@@ -177,9 +216,15 @@ export function ProductsSection({
                       FREE
                     </span>
                   ) : (
-                    <p className="text-sm font-semibold text-gray-900">
-                      {formatPrice(item.totalCents, currency)}
-                    </p>
+                    <div className="text-right">
+                      <p className="text-sm font-semibold text-gray-900">
+                        {formatPrice(item.totalCents, currency)}
+                      </p>
+                      {/* Show if volume pricing is applied */}
+                      {item.priceBreaks && item.priceBreaks.length > 0 && item.unitPriceCents < item.basePriceCents && (
+                        <p className="text-xs text-green-600">Volume discount applied</p>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>

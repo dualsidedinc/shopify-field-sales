@@ -375,6 +375,9 @@ export default function QuotasPage() {
 
   return (
     <s-page heading="Quotas">
+      <s-link slot="breadcrumb-actions" href="/app/reps">
+        Sales Field
+      </s-link>
       <s-link slot="secondary-actions" href="/app/quotas/forecast">
         Forecasts
       </s-link>

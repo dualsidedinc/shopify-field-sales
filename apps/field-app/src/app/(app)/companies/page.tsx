@@ -1,19 +1,31 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import Link from 'next/link';
-import { Search, Building2, ChevronRight } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { Search } from 'lucide-react';
 import { api } from '@/lib/api';
-import type { CompanyListItem, TerritoryListItem, PaginatedResponse } from '@/types';
+import { CompanyList, type CompanyListItemData } from '@/components/lists/CompanyListItem';
+import type { CompanyListItem, TerritoryListItem } from '@/types';
 
 export default function CompaniesPage() {
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedTerritoryId, setSelectedTerritoryId] = useState<string>('');
   const [companies, setCompanies] = useState<CompanyListItem[]>([]);
   const [territories, setTerritories] = useState<TerritoryListItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
-  const [pagination, setPagination] = useState<PaginatedResponse<CompanyListItem>['pagination'] | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
+  const initialLoad = useRef(true);
+
+  // Debounce search input
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // Fetch territories for filter dropdown
   useEffect(() => {
@@ -30,126 +42,127 @@ export default function CompaniesPage() {
     fetchTerritories();
   }, []);
 
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    if (!initialLoad.current) {
+      setPage(1);
+      setCompanies([]);
+    }
+    initialLoad.current = false;
+  }, [debouncedSearch, selectedTerritoryId]);
+
   // Fetch companies with filters
-  const fetchCompanies = useCallback(async () => {
-    setLoading(true);
+  const fetchCompanies = useCallback(async (pageNum: number, append: boolean = false) => {
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+    }
+
     try {
       const { data } = await api.client.companies.list({
-        page,
-        pageSize: 20,
-        query: searchQuery || undefined,
+        page: pageNum,
+        pageSize: 30,
+        query: debouncedSearch || undefined,
         territoryId: selectedTerritoryId || undefined,
       });
 
       if (data) {
-        setCompanies(data.items as CompanyListItem[]);
-        setPagination(data.pagination);
+        if (append) {
+          setCompanies(prev => [...prev, ...(data.items as CompanyListItem[])]);
+        } else {
+          setCompanies(data.items as CompanyListItem[]);
+        }
+        setHasMore(data.pagination.hasNextPage);
+        setTotalCount(data.pagination.totalItems);
       }
     } catch (error) {
       console.error('Error fetching companies:', error);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
-  }, [page, searchQuery, selectedTerritoryId]);
+  }, [debouncedSearch, selectedTerritoryId]);
 
   useEffect(() => {
-    fetchCompanies();
-  }, [fetchCompanies]);
+    fetchCompanies(page, page > 1);
+  }, [page, fetchCompanies]);
 
-  // Reset to page 1 when filters change
-  useEffect(() => {
-    setPage(1);
-  }, [searchQuery, selectedTerritoryId]);
+  const loadMore = () => {
+    if (!loadingMore && hasMore) {
+      setPage(prev => prev + 1);
+    }
+  };
+
+  // Convert to shared component format
+  const companyListData: CompanyListItemData[] = companies.map((c) => ({
+    id: c.id,
+    name: c.name,
+    territoryName: c.territoryName,
+    accountNumber: c.accountNumber,
+  }));
 
   return (
-    <div className="space-y-4">
-      {/* Search */}
-      <div className="relative">
-        <input
-          type="search"
-          placeholder="Search companies..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="input pl-10"
-        />
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-      </div>
-
-      {/* Territory Filter */}
-      {territories.length > 0 && (
-        <select
-          value={selectedTerritoryId}
-          onChange={(e) => setSelectedTerritoryId(e.target.value)}
-          className="input"
-        >
-          <option value="">All Territories</option>
-          {territories.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
-      )}
-
-      {/* Company List */}
-      <div className="space-y-3">
-        {loading ? (
-          <div className="card text-center py-8">
-            <p className="text-gray-500">Loading...</p>
-          </div>
-        ) : companies.length === 0 ? (
-          <div className="card text-center py-8">
-            <p className="text-gray-500">No companies found</p>
-            <p className="text-sm text-gray-400 mt-1">
-              {searchQuery || selectedTerritoryId
-                ? 'Try adjusting your filters'
-                : 'Companies will appear here once synced from Shopify'}
-            </p>
-          </div>
-        ) : (
-          companies.map((company) => (
-            <Link
-              key={company.id}
-              href={`/companies/${company.id}`}
-              className="card-interactive flex items-center gap-3"
-            >
-              <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0">
-                <Building2 className="w-5 h-5 text-primary-600" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-gray-900 truncate">{company.name}</p>
-                <p className="text-sm text-gray-500 truncate">
-                  {company.territoryName || 'No territory'}
-                  {company.accountNumber && ` • #${company.accountNumber}`}
-                </p>
-              </div>
-              <ChevronRight className="w-5 h-5 text-gray-400 flex-shrink-0" />
-            </Link>
-          ))
+    <div className="space-y-3">
+      {/* Search and Territory Filter */}
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <input
+            type="search"
+            placeholder="Search companies..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="input pl-9 h-10 text-sm"
+          />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        </div>
+        {territories.length > 0 && (
+          <select
+            value={selectedTerritoryId}
+            onChange={(e) => setSelectedTerritoryId(e.target.value)}
+            className="input h-10 text-sm w-auto min-w-[100px]"
+          >
+            <option value="">All</option>
+            {territories.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
         )}
       </div>
 
-      {/* Pagination */}
-      {pagination && pagination.totalPages > 1 && (
-        <div className="flex items-center justify-between pt-4">
-          <button
-            onClick={() => setPage(page - 1)}
-            disabled={!pagination.hasPreviousPage}
-            className="btn-secondary disabled:opacity-50"
-          >
-            Previous
-          </button>
-          <span className="text-sm text-gray-500">
-            Page {pagination.page} of {pagination.totalPages}
-          </span>
-          <button
-            onClick={() => setPage(page + 1)}
-            disabled={!pagination.hasNextPage}
-            className="btn-secondary disabled:opacity-50"
-          >
-            Next
-          </button>
-        </div>
+      {/* Results count */}
+      {!loading && totalCount > 0 && (
+        <p className="text-xs text-gray-500 px-1">
+          {totalCount} compan{totalCount !== 1 ? 'ies' : 'y'}
+          {debouncedSearch && ` matching "${debouncedSearch}"`}
+          {selectedTerritoryId && territories.find(t => t.id === selectedTerritoryId) &&
+            ` in ${territories.find(t => t.id === selectedTerritoryId)?.name}`}
+        </p>
+      )}
+
+      {/* Company List */}
+      <CompanyList
+        companies={companyListData}
+        loading={loading}
+        emptyMessage="No companies found"
+        emptySubMessage={
+          debouncedSearch || selectedTerritoryId
+            ? 'Try adjusting your filters'
+            : 'Companies will appear here once synced from Shopify'
+        }
+      />
+
+      {/* Load More */}
+      {hasMore && !loading && (
+        <button
+          onClick={loadMore}
+          disabled={loadingMore}
+          className="btn-secondary w-full text-sm py-2"
+        >
+          {loadingMore ? 'Loading...' : `Load more (${companies.length} of ${totalCount})`}
+        </button>
       )}
     </div>
   );

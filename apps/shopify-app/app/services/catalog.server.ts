@@ -38,7 +38,7 @@ const COMPANY_LOCATION_CATALOGS_QUERY = `#graphql
   }
 `;
 
-// Query price list prices with pagination
+// Query price list prices with pagination (includes volume pricing)
 const PRICE_LIST_PRICES_QUERY = `#graphql
   query PriceListPrices($id: ID!, $first: Int!, $after: String) {
     priceList(id: $id) {
@@ -61,6 +61,37 @@ const PRICE_LIST_PRICES_QUERY = `#graphql
           }
           compareAtPrice {
             amount
+          }
+          quantityPriceBreaks(first: 10) {
+            nodes {
+              minimumQuantity
+              price {
+                amount
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+// Query quantity rules for a price list
+const PRICE_LIST_QUANTITY_RULES_QUERY = `#graphql
+  query PriceListQuantityRules($id: ID!, $first: Int!, $after: String) {
+    priceList(id: $id) {
+      id
+      quantityRules(first: $first, after: $after, originType: FIXED) {
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+        nodes {
+          increment
+          minimum
+          maximum
+          productVariant {
+            id
           }
         }
       }
@@ -135,6 +166,23 @@ interface ShopifyPriceListPrice {
   compareAtPrice?: {
     amount: string;
   } | null;
+  quantityPriceBreaks?: {
+    nodes: Array<{
+      minimumQuantity: number;
+      price: {
+        amount: string;
+      };
+    }>;
+  };
+}
+
+interface ShopifyQuantityRule {
+  increment: number;
+  minimum: number;
+  maximum: number | null;
+  productVariant: {
+    id: string;
+  };
 }
 
 // ============================================
@@ -263,7 +311,7 @@ export async function syncCatalog(
 }
 
 /**
- * Sync all prices from a price list
+ * Sync all prices, quantity rules, and volume pricing from a price list
  */
 async function syncPriceListItems(
   catalogId: string,
@@ -272,16 +320,17 @@ async function syncPriceListItems(
 ): Promise<void> {
   console.log(`[Catalog Sync] Syncing price list items for catalog ${catalogId}`);
 
+  // Step 1: Fetch all prices with quantity price breaks
   let hasNextPage = true;
   let cursor: string | null = null;
   let totalItems = 0;
 
-  // Collect all items first
   const allItems: {
     shopifyVariantId: string;
     shopifyProductId: string;
     priceCents: number;
     compareAtPriceCents: number | null;
+    priceBreaks: Array<{ minimumQuantity: number; priceCents: number }>;
   }[] = [];
 
   while (hasNextPage) {
@@ -311,6 +360,11 @@ async function syncPriceListItems(
     if (!prices) break;
 
     for (const price of prices.nodes) {
+      const priceBreaks = (price.quantityPriceBreaks?.nodes || []).map((pb) => ({
+        minimumQuantity: pb.minimumQuantity,
+        priceCents: Math.round(parseFloat(pb.price.amount) * 100),
+      }));
+
       allItems.push({
         shopifyVariantId: fromGid(price.variant.id),
         shopifyProductId: fromGid(price.variant.product.id),
@@ -318,6 +372,7 @@ async function syncPriceListItems(
         compareAtPriceCents: price.compareAtPrice
           ? Math.round(parseFloat(price.compareAtPrice.amount) * 100)
           : null,
+        priceBreaks,
       });
     }
 
@@ -328,25 +383,91 @@ async function syncPriceListItems(
 
   console.log(`[Catalog Sync] Fetched ${totalItems} price list items`);
 
-  // Delete existing items and insert new ones in a transaction
+  // Step 2: Fetch quantity rules (min/max/increment)
+  const quantityRules = new Map<string, { min: number; max: number | null; increment: number }>();
+  hasNextPage = true;
+  cursor = null;
+
+  while (hasNextPage) {
+    const response = await admin.graphql(PRICE_LIST_QUANTITY_RULES_QUERY, {
+      variables: {
+        id: priceListGid,
+        first: 250,
+        after: cursor,
+      },
+    });
+
+    const result: {
+      data?: {
+        priceList?: {
+          quantityRules: {
+            pageInfo: {
+              hasNextPage: boolean;
+              endCursor: string | null;
+            };
+            nodes: ShopifyQuantityRule[];
+          };
+        };
+      };
+    } = await response.json();
+
+    const rules = result.data?.priceList?.quantityRules;
+    if (!rules) break;
+
+    for (const rule of rules.nodes) {
+      const variantId = fromGid(rule.productVariant.id);
+      quantityRules.set(variantId, {
+        min: rule.minimum,
+        max: rule.maximum,
+        increment: rule.increment,
+      });
+    }
+
+    hasNextPage = rules.pageInfo.hasNextPage;
+    cursor = rules.pageInfo.endCursor;
+  }
+
+  console.log(`[Catalog Sync] Fetched ${quantityRules.size} quantity rules`);
+
+  // Step 3: Delete existing items and insert new ones in a transaction
   await prisma.$transaction(async (tx) => {
-    // Delete all existing items for this catalog
+    // Delete all existing items for this catalog (cascades to price breaks)
     await tx.catalogItem.deleteMany({
       where: { catalogId },
     });
 
-    // Insert all items
-    if (allItems.length > 0) {
-      await tx.catalogItem.createMany({
-        data: allItems.map((item) => ({
+    // Insert all items with quantity rules
+    for (const item of allItems) {
+      const rule = quantityRules.get(item.shopifyVariantId);
+
+      const catalogItem = await tx.catalogItem.create({
+        data: {
           catalogId,
-          ...item,
-        })),
+          shopifyVariantId: item.shopifyVariantId,
+          shopifyProductId: item.shopifyProductId,
+          priceCents: item.priceCents,
+          compareAtPriceCents: item.compareAtPriceCents,
+          quantityMin: rule?.min || null,
+          quantityMax: rule?.max || null,
+          quantityIncrement: rule?.increment || null,
+        },
       });
+
+      // Insert price breaks if any
+      if (item.priceBreaks.length > 0) {
+        await tx.catalogItemPriceBreak.createMany({
+          data: item.priceBreaks.map((pb) => ({
+            catalogItemId: catalogItem.id,
+            minimumQuantity: pb.minimumQuantity,
+            priceCents: pb.priceCents,
+          })),
+        });
+      }
     }
   });
 
-  console.log(`[Catalog Sync] Synced ${allItems.length} catalog items`);
+  const totalPriceBreaks = allItems.reduce((sum, item) => sum + item.priceBreaks.length, 0);
+  console.log(`[Catalog Sync] Synced ${allItems.length} catalog items with ${quantityRules.size} quantity rules and ${totalPriceBreaks} price breaks`);
 }
 
 /**
@@ -403,12 +524,22 @@ export async function syncAllShopCatalogs(
   }
 }
 
+export interface CatalogPricing {
+  priceCents: number;
+  compareAtPriceCents: number | null;
+  quantityMin: number | null;
+  quantityMax: number | null;
+  quantityIncrement: number | null;
+  priceBreaks: Array<{ minimumQuantity: number; priceCents: number }>;
+}
+
 /**
  * Get catalog pricing for a company location
+ * Includes pricing, quantity rules, and volume pricing
  */
 export async function getCatalogPricingForLocation(
   companyLocationId: string
-): Promise<Map<string, { priceCents: number; compareAtPriceCents: number | null }>> {
+): Promise<Map<string, CatalogPricing>> {
   // Get all catalog items for catalogs assigned to this location
   const catalogItems = await prisma.catalogItem.findMany({
     where: {
@@ -423,15 +554,31 @@ export async function getCatalogPricingForLocation(
       shopifyVariantId: true,
       priceCents: true,
       compareAtPriceCents: true,
+      quantityMin: true,
+      quantityMax: true,
+      quantityIncrement: true,
+      priceBreaks: {
+        select: {
+          minimumQuantity: true,
+          priceCents: true,
+        },
+        orderBy: {
+          minimumQuantity: "asc",
+        },
+      },
     },
   });
 
-  // Build a map of variant ID -> pricing
-  const pricingMap = new Map<string, { priceCents: number; compareAtPriceCents: number | null }>();
+  // Build a map of variant ID -> pricing with rules
+  const pricingMap = new Map<string, CatalogPricing>();
   for (const item of catalogItems) {
     pricingMap.set(item.shopifyVariantId, {
       priceCents: item.priceCents,
       compareAtPriceCents: item.compareAtPriceCents,
+      quantityMin: item.quantityMin,
+      quantityMax: item.quantityMax,
+      quantityIncrement: item.quantityIncrement,
+      priceBreaks: item.priceBreaks,
     });
   }
 

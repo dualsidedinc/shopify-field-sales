@@ -1,3 +1,4 @@
+export { AddressAutocomplete, type AddressComponents } from './AddressAutocomplete';
 export { BackButton } from './BackButton';
 export { BottomSheet } from './BottomSheet';
 export { BrandingProvider, useBranding } from './BrandingProvider';

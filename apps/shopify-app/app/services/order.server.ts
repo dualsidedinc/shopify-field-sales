@@ -2,6 +2,7 @@ import { prisma } from "@field-sales/database";
 import type { OrderStatus, PaymentTerms, PromotionType, PromotionScope } from "@prisma/client";
 import { toGid, fromGid } from "../lib/shopify-ids";
 import { recordBilledOrder, getCurrentBillingPeriod, PLAN_CONFIGS } from "./billing.server";
+import { buildOrderMetafields, ensureMetafieldSetupForShop, type OrderMetafieldData } from "./metafield.server";
 import {
   evaluatePromotions,
   type EngineLineItem,
@@ -1084,7 +1085,7 @@ const DRAFT_ORDER_QUERY = `#graphql
 `;
 
 const DRAFT_ORDER_INVOICE_SEND_MUTATION = `#graphql
-  mutation DraftOrderInvoiceSend($id: ID!, $email: DraftOrderInvoiceInput) {
+  mutation DraftOrderInvoiceSend($id: ID!, $email: EmailInput) {
     draftOrderInvoiceSend(id: $id, email: $email) {
       draftOrder {
         id
@@ -1222,7 +1223,7 @@ const ORDER_CAPTURE_MUTATION = `#graphql
 
 // Types for Shopify admin API
 interface ShopifyAdmin {
-  graphql: (query: string, options?: { variables: Record<string, unknown> }) => Promise<Response>;
+  graphql: (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response>;
 }
 
 interface DraftOrderLineItemInput {
@@ -1247,12 +1248,30 @@ export async function syncOrderToShopifyDraft(
   const order = await prisma.order.findFirst({
     where: { id: orderId, shopId },
     include: {
-      company: { select: { shopifyCompanyId: true, name: true } },
+      company: {
+        select: {
+          shopifyCompanyId: true,
+          name: true,
+          territory: { select: { name: true, code: true } },
+        },
+      },
       contact: { select: { shopifyContactId: true, shopifyCustomerId: true, email: true, phone: true, firstName: true, lastName: true } },
-      shippingLocation: { select: { shopifyLocationId: true, address1: true, address2: true, city: true, province: true, zipcode: true, countryCode: true, phone: true } },
+      shippingLocation: {
+        select: {
+          shopifyLocationId: true,
+          address1: true,
+          address2: true,
+          city: true,
+          province: true,
+          zipcode: true,
+          countryCode: true,
+          phone: true,
+          territory: { select: { name: true, code: true } },
+        },
+      },
       billingLocation: { select: { shopifyLocationId: true, address1: true, address2: true, city: true, province: true, zipcode: true, countryCode: true, phone: true } },
       shippingMethod: { select: { title: true, priceCents: true } },
-      salesRep: { select: { id: true, firstName: true, lastName: true } },
+      salesRep: { select: { id: true, firstName: true, lastName: true, externalId: true } },
       lineItems: true,
     },
   });
@@ -1265,6 +1284,34 @@ export async function syncOrderToShopifyDraft(
   // DRAFT orders must first be submitted for approval
   if (order.status !== "AWAITING_REVIEW") {
     return { success: false, error: "Only orders awaiting review can be submitted to Shopify" };
+  }
+
+  // Ensure metafield definitions exist for this shop (cached check)
+  const metafieldSetup = await ensureMetafieldSetupForShop(shopId, admin);
+  if (!metafieldSetup.success) {
+    console.error("[Order Sync] Failed to ensure metafield definitions:", metafieldSetup.errors);
+    // Don't fail the order - metafields are optional enhancement
+  }
+
+  // Validate that all product variants in the order still exist in Shopify
+  const variantIds = order.lineItems
+    .filter((li) => li.shopifyVariantId)
+    .map((li) => li.shopifyVariantId as string);
+
+  if (variantIds.length > 0) {
+    const { validateOrderProductsWithShopify } = await import("./sync.server");
+    const validation = await validateOrderProductsWithShopify(shopId, variantIds);
+
+    if (!validation.valid) {
+      const missingTitles = order.lineItems
+        .filter((li) => validation.missingVariants.includes(li.shopifyVariantId || ""))
+        .map((li) => li.title);
+
+      return {
+        success: false,
+        error: `Some products no longer exist in Shopify: ${missingTitles.join(", ")}. Please edit the order and remove these items.`,
+      };
+    }
   }
 
   try {
@@ -1341,6 +1388,20 @@ export async function syncOrderToShopifyDraft(
       ? `${order.salesRep.firstName} ${order.salesRep.lastName}`.trim()
       : undefined;
 
+    // Get territory from shipping location first, fall back to company territory
+    const territory = order.shippingLocation?.territory || order.company?.territory;
+
+    // Build metafield data for this order
+    const metafieldData: OrderMetafieldData = {
+      territoryCode: territory?.code || null,
+      territoryName: territory?.name || null,
+      salesRepExternalId: order.salesRep?.externalId || null,
+      salesRepName: salesRepName || null,
+    };
+
+    // Build metafields array for Shopify
+    const metafields = buildOrderMetafields(metafieldData);
+
     // Build input for Shopify
     const input: Record<string, unknown> = {
       lineItems,
@@ -1359,6 +1420,8 @@ export async function syncOrderToShopifyDraft(
         ...(salesRepName ? [{ key: "salesRepName", value: salesRepName }] : []),
         { key: "fieldSalesOrderId", value: order.id },
       ],
+      // App-specific metafields for reporting and integrations
+      ...(metafields.length > 0 && { metafields }),
     };
 
     // Add shipping line if shipping method is selected
@@ -2014,8 +2077,16 @@ export async function submitOrderForPayment(
   // ==========================================================================
   try {
     let invoiceUrl = "";
+    let invoiceSent = false;
 
-    if (sendInvoice && order.contact?.email) {
+    if (sendInvoice) {
+      if (!order.contact?.email) {
+        console.error("Cannot send invoice: No contact email for order", orderId);
+        return { success: false, error: "Cannot send invoice: No contact email address" };
+      }
+
+      console.log(`Sending invoice for order ${order.orderNumber} to ${order.contact.email}`);
+
       const invoiceInput = {
         to: order.contact.email,
         subject: `Invoice for Order ${order.orderNumber}`,
@@ -2045,9 +2116,13 @@ export async function submitOrderForPayment(
       if (result.data?.draftOrderInvoiceSend?.userErrors?.length) {
         const errors = result.data.draftOrderInvoiceSend.userErrors;
         console.error("Shopify invoice send errors:", errors);
+        return { success: false, error: `Invoice send failed: ${errors.map(e => e.message).join(", ")}` };
       }
 
       invoiceUrl = result.data?.draftOrderInvoiceSend?.draftOrder?.invoiceUrl || "";
+      invoiceSent = !!result.data?.draftOrderInvoiceSend?.draftOrder?.invoiceSentAt;
+
+      console.log(`Invoice sent successfully. URL: ${invoiceUrl}, Sent: ${invoiceSent}`);
     }
 
     await prisma.order.update({
@@ -2061,22 +2136,11 @@ export async function submitOrderForPayment(
       success: true,
       shopifyDraftOrderId: syncResult.shopifyDraftOrderId,
       invoiceUrl,
-      paymentStatus: sendInvoice ? 'invoice_sent' : 'pending',
+      paymentStatus: sendInvoice && invoiceSent ? 'invoice_sent' : 'pending',
     };
   } catch (error) {
     console.error("Error sending invoice:", error);
-    await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        status: "PENDING",
-      },
-    });
-    return {
-      success: true,
-      shopifyDraftOrderId: syncResult.shopifyDraftOrderId,
-      invoiceUrl: "",
-      paymentStatus: 'pending',
-    };
+    return { success: false, error: "Failed to send invoice" };
   }
 }
 

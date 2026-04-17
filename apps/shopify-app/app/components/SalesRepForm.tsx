@@ -35,6 +35,7 @@ export interface SalesRepFormData {
   lastName: string;
   email: string;
   phone: string;
+  externalId: string;
   role: "REP" | "MANAGER" | "ADMIN";
   territoryIds: string[];
   requiresOrderApproval: boolean;
@@ -47,6 +48,7 @@ interface SalesRepData {
   lastName: string;
   email: string;
   phone: string | null;
+  externalId: string | null;
   role: "REP" | "MANAGER" | "ADMIN";
   territoryIds: string[];
   approvalThresholdCents: number | null;
@@ -65,6 +67,7 @@ const defaultValues: SalesRepFormData = {
   lastName: "",
   email: "",
   phone: "",
+  externalId: "",
   role: "REP",
   territoryIds: [],
   requiresOrderApproval: true,
@@ -87,6 +90,7 @@ function repToFormData(rep?: SalesRepData): SalesRepFormData {
     lastName: rep.lastName || "",
     email: rep.email || "",
     phone: rep.phone || "",
+    externalId: rep.externalId || "",
     role: rep.role || "REP",
     territoryIds: rep.territoryIds || [],
     requiresOrderApproval,
@@ -216,6 +220,17 @@ export function SalesRepForm({
               }}
               error={formData.phone && !isValidPhone(formData.phone) ? "Enter a valid 10-digit phone number" : undefined}
               placeholder="(555) 123-4567"
+            />
+          </s-grid-item>
+          <s-grid-item>
+            <s-text-field
+              label="External ID"
+              value={formData.externalId}
+              onInput={(e: Event) => {
+                const target = e.target as HTMLInputElement;
+                updateField("externalId", target.value);
+              }}
+              placeholder="Optional business identifier"
             />
           </s-grid-item>
           <s-grid-item gridColumn="span 2">

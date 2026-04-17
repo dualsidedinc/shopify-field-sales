@@ -7,6 +7,7 @@ import {
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import { prisma } from "@field-sales/database";
+import { ensureOrderMetafieldDefinitions } from "./services/metafield.server";
 
 const prismaSessionStorage = new PrismaSessionStorage(prisma);
 
@@ -136,8 +137,21 @@ const shopify = shopifyApp({
 
         console.log(`[Shop Provisioning] Successfully provisioned shop for: ${session.shop} (hasManagedCompanies: ${hasManagedCompanies}, plan: ${planName})`);
 
-        // Register webhooks for company sync, orders, etc.
-        // This will be expanded in Sprint 2
+        // Ensure metafield definitions exist for order tracking
+        try {
+          const metafieldResult = await ensureOrderMetafieldDefinitions(admin);
+          if (metafieldResult.success) {
+            // Mark metafields as set up for this shop
+            await prisma.shop.update({
+              where: { shopifyDomain: session.shop },
+              data: { metafieldsSetupAt: new Date() },
+            });
+            console.log(`[Shop Provisioning] Metafield definitions ensured for: ${session.shop}`);
+          }
+        } catch (metafieldError) {
+          console.error(`[Shop Provisioning] Failed to create metafield definitions for ${session.shop}:`, metafieldError);
+          // Don't fail the auth flow for this
+        }
       } catch (error) {
         console.error(`[Shop Provisioning] Failed for ${session.shop}:`, error);
         // Don't throw - allow the auth flow to continue

@@ -8,6 +8,7 @@ export interface SalesRepListItem {
   lastName: string;
   email: string;
   phone: string | null;
+  externalId: string | null;
   role: string;
   isActive: boolean;
   territoryCount: number;
@@ -20,6 +21,7 @@ export interface SalesRepDetail {
   lastName: string;
   email: string;
   phone: string | null;
+  externalId: string | null;
   role: "REP" | "MANAGER" | "ADMIN";
   isActive: boolean;
   approvalThresholdCents: number | null;
@@ -59,6 +61,7 @@ export interface CreateSalesRepInput {
   lastName: string;
   email: string;
   phone?: string | null;
+  externalId?: string | null;
   role?: RepRole;
   territoryIds?: string[];
   approvalThresholdCents?: number | null;
@@ -69,6 +72,7 @@ export interface UpdateSalesRepInput {
   lastName?: string;
   email?: string;
   phone?: string | null;
+  externalId?: string | null;
   role?: RepRole;
   territoryIds?: string[];
   approvalThresholdCents?: number | null;
@@ -91,6 +95,7 @@ export async function getSalesReps(shopId: string): Promise<SalesRepListItem[]> 
     lastName: r.lastName,
     email: r.email,
     phone: r.phone,
+    externalId: r.externalId,
     role: r.role,
     isActive: r.isActive,
     territoryCount: r.repTerritories.length,
@@ -158,6 +163,7 @@ export async function getSalesRepById(
     lastName: rep.lastName,
     email: rep.email,
     phone: rep.phone,
+    externalId: rep.externalId,
     role: rep.role,
     isActive: rep.isActive,
     approvalThresholdCents: rep.approvalThresholdCents,
@@ -182,7 +188,7 @@ export async function getSalesRepById(
 export async function createSalesRep(
   input: CreateSalesRepInput
 ): Promise<{ success: true; repId: string } | { success: false; error: string }> {
-  const { shopId, firstName, lastName, email, phone, role, territoryIds, approvalThresholdCents } = input;
+  const { shopId, firstName, lastName, email, phone, externalId, role, territoryIds, approvalThresholdCents } = input;
 
   if (!firstName?.trim() || !lastName?.trim() || !email?.trim()) {
     return { success: false, error: "First name, last name, and email are required" };
@@ -223,6 +229,7 @@ export async function createSalesRep(
         lastName: lastName.trim(),
         email: email.trim().toLowerCase(),
         phone: normalizedPhone || null,
+        externalId: externalId?.trim() || null,
         role: role || "REP",
         isActive: true,
         activatedAt: new Date(), // Track when rep was activated for billing
@@ -259,7 +266,7 @@ export async function updateSalesRep(
     return { success: false, error: "Sales rep not found" };
   }
 
-  const { firstName, lastName, email, phone, role, territoryIds, approvalThresholdCents } = input;
+  const { firstName, lastName, email, phone, externalId, role, territoryIds, approvalThresholdCents } = input;
 
   if (
     (firstName !== undefined && !firstName?.trim()) ||
@@ -310,6 +317,7 @@ export async function updateSalesRep(
           ...(lastName && { lastName: lastName.trim() }),
           ...(email && { email: email.trim().toLowerCase() }),
           ...(phone !== undefined && { phone: normalizedPhone || null }),
+          ...(externalId !== undefined && { externalId: externalId?.trim() || null }),
           ...(role && { role }),
           ...(approvalThresholdCents !== undefined && { approvalThresholdCents }),
         },

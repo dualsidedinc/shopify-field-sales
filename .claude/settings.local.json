@@ -74,7 +74,18 @@
       "Bash(DATABASE_URL=\"postgresql://postgres:R373br9uoxmd@localhost:5432/field_sales_manager\" npx prisma migrate reset:*)",
       "Bash(DATABASE_URL=\"postgresql://postgres:R373br9uoxmd@localhost:5432/field_sales_manager\" npx prisma migrate diff:*)",
       "Bash(DATABASE_URL=\"postgresql://postgres:R373br9uoxmd@localhost:5432/field_sales_manager\" npx prisma migrate resolve:*)",
-      "Bash(DATABASE_URL=\"postgresql://postgres:R373br9uoxmd@localhost:5432/field_sales_manager\" npx prisma migrate status:*)"
+      "Bash(DATABASE_URL=\"postgresql://postgres:R373br9uoxmd@localhost:5432/field_sales_manager\" npx prisma migrate status:*)",
+      "Bash(npx prisma migrate diff:*)",
+      "Bash(npx tsc --noEmit)",
+      "Bash(npx react-router typegen)",
+      "Bash(curl -s \"http://localhost:3000/proxy/lead-form\")",
+      "Bash(node -e \"require(''''./app/routes/proxy.lead-form.tsx'''')\")",
+      "Bash(node -e:*)",
+      "Bash(npm run db:migrate:*)",
+      "Bash(npm install)",
+      "Bash(git checkout:*)",
+      "Bash(shopify app generate extension:*)",
+      "Bash(NPM_CONFIG_WORKSPACES=false npm install:*)"
     ]
   }
 }

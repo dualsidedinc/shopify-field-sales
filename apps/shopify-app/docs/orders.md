@@ -136,10 +136,89 @@ const input = {
 | `tags: ["FieldSale"]` | Identifies orders from field sales app |
 | `sourceName` | Shows "Field Sales App" in Shopify admin |
 | `customAttributes` | Links order to sales rep for commission tracking |
+| `metafields` | App-specific data (territory, sales rep info) |
 | `purchasingEntity` | Assigns B2B company (auto-applies payment terms) |
 | `appliedDiscount` (line) | Promotion discounts per line item |
 | `appliedDiscount` (order) | Order-total promotions |
 | `shippingLine` | Selected shipping method and price |
+
+## Order Metafields
+
+Orders are enriched with app-specific metafields under the `field_sales` namespace. These are set automatically when draft orders are created in Shopify.
+
+### Metafield Definitions
+
+| Key | Name | Description |
+|-----|------|-------------|
+| `territory_code` | Territory Code | The code of the territory this order was placed from |
+| `territory_name` | Territory Name | The name of the territory this order was placed from |
+| `sales_rep_external_id` | Sales Rep External ID | The external ID of the sales rep who placed this order |
+| `sales_rep_name` | Sales Rep Name | The name of the sales rep who placed this order |
+
+### Use Cases
+
+These metafields enable:
+- **Reporting**: Filter and group orders by territory or sales rep in Shopify reports
+- **Integrations**: Sync order data with external systems (ERP, CRM)
+- **Commission Tracking**: Identify sales rep for commission calculations
+- **Analytics**: Build dashboards based on territory performance
+
+### Metafield Setup
+
+Metafield definitions are created automatically:
+
+1. **New Installs**: Created during OAuth via `afterAuth` hook
+2. **First Order**: Checked when syncing order to Shopify (lazy setup)
+3. **Manual**: Settings → "Setup Order Metafields" button
+
+The shop's `metafieldsSetupAt` timestamp caches whether setup is complete.
+
+### Metafield Service
+
+```typescript
+// services/metafield.server.ts
+
+// Ensure definitions exist (idempotent)
+await ensureOrderMetafieldDefinitions(admin);
+
+// Check if shop needs setup
+const isSetup = await isMetafieldSetupComplete(shopId);
+
+// Ensure setup with caching (safe to call on every order)
+await ensureMetafieldSetupForShop(shopId, admin);
+
+// Build metafields for a draft order
+const metafields = buildOrderMetafields({
+  territoryCode: "WEST-001",
+  territoryName: "Western Region",
+  salesRepExternalId: "EMP-123",
+  salesRepName: "John Smith",
+});
+
+// Set metafields on existing order
+await setOrderMetafields(admin, orderGid, metafieldData);
+```
+
+### Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    ORDER SYNC TO SHOPIFY                    │
+├─────────────────────────────────────────────────────────────┤
+│  1. ensureMetafieldSetupForShop(shopId, admin)             │
+│     └─► Creates definitions if not already set up           │
+│                                                             │
+│  2. Collect metafield data from order:                      │
+│     - Territory code/name from shipping location or company │
+│     - Sales rep external ID and name                        │
+│                                                             │
+│  3. Include metafields in draft order input:                │
+│     input.metafields = buildOrderMetafields(data)           │
+│                                                             │
+│  4. Draft order created with metafields attached            │
+│     └─► Metafields copy to real order when completed        │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ### GraphQL Mutations
 

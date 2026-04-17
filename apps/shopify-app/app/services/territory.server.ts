@@ -59,6 +59,7 @@ export const US_STATES = [
 export interface TerritoryListItem {
   id: string;
   name: string;
+  code: string | null;
   description: string | null;
   isActive: boolean;
   stateCount: number;
@@ -75,6 +76,7 @@ export interface TerritoryState {
 export interface TerritoryDetail {
   id: string;
   name: string;
+  code: string | null;
   description: string | null;
   isActive: boolean;
   createdAt: string;
@@ -103,6 +105,7 @@ export interface TerritoryLocation {
 export interface CreateTerritoryInput {
   shopId: string;
   name: string;
+  code?: string | null;
   description?: string | null;
   stateCodes?: string[];
   zipcodes?: string[];
@@ -111,6 +114,7 @@ export interface CreateTerritoryInput {
 
 export interface UpdateTerritoryInput {
   name?: string;
+  code?: string | null;
   description?: string | null;
   stateCodes?: string[];
   zipcodes?: string[];
@@ -133,6 +137,7 @@ export async function getTerritories(shopId: string): Promise<TerritoryListItem[
   return territories.map((t) => ({
     id: t.id,
     name: t.name,
+    code: t.code,
     description: t.description,
     isActive: t.isActive,
     stateCount: t.states.length,
@@ -186,6 +191,7 @@ export async function getTerritoryById(
   return {
     id: territory.id,
     name: territory.name,
+    code: territory.code,
     description: territory.description,
     isActive: territory.isActive,
     createdAt: territory.createdAt.toISOString(),
@@ -215,7 +221,7 @@ export async function getTerritoryById(
 export async function createTerritory(
   input: CreateTerritoryInput
 ): Promise<{ success: true; territoryId: string } | { success: false; error: string }> {
-  const { shopId, name, description, stateCodes, zipcodes, repIds } = input;
+  const { shopId, name, code, description, stateCodes, zipcodes, repIds } = input;
 
   if (!name?.trim()) {
     return { success: false, error: "Territory name is required" };
@@ -238,6 +244,7 @@ export async function createTerritory(
       data: {
         shopId,
         name: name.trim(),
+        code: code?.trim() || null,
         description: description?.trim() || null,
         isActive: true,
         ...(stateCodes && stateCodes.length > 0 && {
@@ -287,7 +294,7 @@ export async function updateTerritory(
     return { success: false, error: "Territory not found" };
   }
 
-  const { name, description, stateCodes, zipcodes, repIds } = input;
+  const { name, code, description, stateCodes, zipcodes, repIds } = input;
 
   if (name !== undefined && !name?.trim()) {
     return { success: false, error: "Territory name is required" };
@@ -315,6 +322,7 @@ export async function updateTerritory(
         where: { id: territoryId },
         data: {
           ...(name && { name: name.trim() }),
+          ...(code !== undefined && { code: code?.trim() || null }),
           ...(description !== undefined && { description: description?.trim() || null }),
         },
       });

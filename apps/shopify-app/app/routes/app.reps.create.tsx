@@ -48,6 +48,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const lastName = formData.get("lastName") as string;
   const email = formData.get("email") as string;
   const phone = formData.get("phone") as string | null;
+  const externalId = formData.get("externalId") as string | null;
   const role = formData.get("role") as string | null;
   const territoryIdsStr = formData.get("territoryIds") as string | null;
   const requiresOrderApproval = formData.get("requiresOrderApproval") === "true";
@@ -72,6 +73,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     lastName,
     email,
     phone: phone || null,
+    externalId: externalId || null,
     role: (role as RepRole) || "REP",
     territoryIds,
     approvalThresholdCents,
@@ -107,6 +109,7 @@ export default function NewSalesRepPage() {
         lastName: data.lastName,
         email: data.email,
         phone: data.phone || "",
+        externalId: data.externalId || "",
         role: data.role,
         territoryIds: JSON.stringify(data.territoryIds),
         requiresOrderApproval: data.requiresOrderApproval.toString(),

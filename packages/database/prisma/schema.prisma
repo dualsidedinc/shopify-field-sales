@@ -63,6 +63,9 @@ model Shop {
   orderPrefix       String    @default("FS") @map("order_prefix")
   orderNumberStart  Int       @default(1) @map("order_number_start")
 
+  // Metafield setup tracking
+  metafieldsSetupAt DateTime? @map("metafields_setup_at")
+
   // Billing
   billingPlan           BillingPlan?   @map("billing_plan")
   billingStatus         BillingStatus  @default(INACTIVE) @map("billing_status")
@@ -89,6 +92,8 @@ model Shop {
   quotas          RepQuota[]
   billingPeriods  BillingPeriod[]
   catalogs        Catalog[]
+  leadFormFields  LeadFormField[]
+  leads           Lead[]
 
   @@map("shops")
 }
@@ -120,6 +125,7 @@ enum BillingStatus {
 model SalesRep {
   id           String    @id @default(cuid())
   shopId       String    @map("shop_id")
+  externalId   String?   @map("external_id")
   email        String
   firstName    String    @map("first_name")
   lastName     String    @map("last_name")
@@ -168,6 +174,7 @@ model Territory {
   id          String   @id @default(cuid())
   shopId      String   @map("shop_id")
   name        String
+  code        String?
   description String?
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
@@ -406,18 +413,42 @@ model CatalogItem {
   shopifyVariantId    String   @map("shopify_variant_id")
   shopifyProductId    String   @map("shopify_product_id")
 
+  // Pricing
   priceCents          Int      @map("price_cents")
   compareAtPriceCents Int?     @map("compare_at_price_cents")
+
+  // Quantity Rules (from Shopify B2B)
+  quantityMin         Int?     @map("quantity_min")       // Minimum order quantity
+  quantityMax         Int?     @map("quantity_max")       // Maximum order quantity (null = unlimited)
+  quantityIncrement   Int?     @map("quantity_increment") // Must order in multiples of this
 
   createdAt           DateTime @default(now()) @map("created_at")
   updatedAt           DateTime @updatedAt @map("updated_at")
 
-  catalog Catalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+  catalog     Catalog                 @relation(fields: [catalogId], references: [id], onDelete: Cascade)
+  priceBreaks CatalogItemPriceBreak[]
 
   @@unique([catalogId, shopifyVariantId])
   @@index([shopifyVariantId])
   @@index([catalogId, shopifyProductId])
   @@map("catalog_items")
+}
+
+// Volume pricing tiers for catalog items
+model CatalogItemPriceBreak {
+  id              String @id @default(cuid())
+  catalogItemId   String @map("catalog_item_id")
+  minimumQuantity Int    @map("minimum_quantity") // Buy X or more
+  priceCents      Int    @map("price_cents")      // Get this price per unit
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  catalogItem CatalogItem @relation(fields: [catalogItemId], references: [id], onDelete: Cascade)
+
+  @@unique([catalogItemId, minimumQuantity])
+  @@index([catalogItemId])
+  @@map("catalog_item_price_breaks")
 }
 
 // ============================================
@@ -862,4 +893,73 @@ model BilledOrder {
 
   @@index([billingPeriodId])
   @@map("billed_orders")
+}
+
+// ============================================
+// LEADS (Form Builder)
+// ============================================
+
+enum LeadFieldType {
+  TEXT     @map("text")
+  SELECT   @map("select")
+  CHECKBOX @map("checkbox")
+  TEXTAREA @map("textarea")
+  ADDRESS  @map("address")
+}
+
+enum LeadStatus {
+  NEW      @map("new")
+  REVIEWED @map("reviewed")
+  APPROVED @map("approved")
+  REJECTED @map("rejected")
+}
+
+model LeadFormField {
+  id          String        @id @default(cuid())
+  shopId      String        @map("shop_id")
+  name        String                              // Internal field name (e.g., "company_name", "specialty")
+  label       String                              // Display label (e.g., "Company Name", "Specialty")
+  fieldType   LeadFieldType @map("field_type")
+  placeholder String?                             // Placeholder text
+  options     String[]      @default([])          // For select type - admin-defined options
+  isRequired  Boolean       @default(false) @map("is_required")
+  position    Int           @default(0)
+  isActive    Boolean       @default(true) @map("is_active")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([shopId, name])
+  @@index([shopId, isActive, position])
+  @@map("lead_form_fields")
+}
+
+model Lead {
+  id         String     @id @default(cuid())
+  shopId     String     @map("shop_id")
+
+  // ALL field responses stored as JSON: { fieldName: value, ... }
+  // e.g., { "company_name": "Acme Inc", "specialty": "Restaurant", "email": "..." }
+  formData   Json       @map("form_data")
+
+  // Status
+  status     LeadStatus @default(NEW)
+  reviewedAt DateTime?  @map("reviewed_at")
+  reviewedBy String?    @map("reviewed_by")
+  reviewNotes String?   @map("review_notes")
+
+  // Future conversion tracking
+  convertedCompanyId String? @map("converted_company_id")
+  convertedAt DateTime?      @map("converted_at")
+
+  submittedAt DateTime  @default(now()) @map("submitted_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  shop Shop @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@index([shopId, status])
+  @@index([shopId, submittedAt])
+  @@map("leads")
 }

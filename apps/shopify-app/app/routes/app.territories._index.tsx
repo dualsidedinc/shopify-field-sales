@@ -145,6 +145,10 @@ export default function TerritoriesPage() {
 
   return (
     <s-page heading="Territories">
+      <s-link slot="breadcrumb-actions" href="/app/reps">
+        Sales Field
+      </s-link>
+
       <s-link slot="secondary-actions" href="/app/territories/create">
         Add Territory
       </s-link>

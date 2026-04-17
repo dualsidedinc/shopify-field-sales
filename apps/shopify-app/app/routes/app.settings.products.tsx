@@ -612,7 +612,7 @@ export default function ProductsPage() {
                       />
                     </s-table-cell>
                     <s-table-cell>
-                      <s-stack gap="none">
+                      <s-stack direction="inline" gap="base" alignItems="center">
                         {product.imageUrl && (
                           <s-thumbnail
                             src={product.imageUrl}
@@ -620,7 +620,7 @@ export default function ProductsPage() {
                             size="small"
                           />
                         )}
-                        <s-text>{product.title}</s-text>
+                        <s-heading>{product.title}</s-heading>
                       </s-stack>
                     </s-table-cell>
                     <s-table-cell>

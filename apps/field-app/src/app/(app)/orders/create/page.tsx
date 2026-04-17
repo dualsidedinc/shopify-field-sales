@@ -24,5 +24,5 @@ export default function OrderCreatePage() {
     <Suspense fallback={<div className="p-4 text-center text-gray-500">Loading...</div>}>
       <OrderCreateContent />
     </Suspense>
-  );
+  )
 }

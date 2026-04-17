@@ -27,6 +27,7 @@ export type {
   LocationWithPaymentTerms,
   // Product types
   ProductSearchParams,
+  ApiPriceBreak,
   ApiProductVariant,
   ApiProductListItem,
   // Promotion types

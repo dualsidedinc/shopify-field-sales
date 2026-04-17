@@ -222,12 +222,18 @@ export default function OrderDetailPage() {
       imageUrl: item.imageUrl,
       quantity: item.quantity,
       unitPriceCents: item.unitPriceCents,
+      basePriceCents: item.unitPriceCents, // Use unit price as base for existing orders
       discountCents: item.discountCents,
       totalCents: item.totalCents,
       // Promotion tracking - mark free items
       isFreeItem: item.isPromotionItem || false,
       promotionId: item.promotionId || undefined,
       promotionName: item.promotionName || undefined,
+      // Quantity rules - not stored on existing orders, default to null
+      quantityMin: null,
+      quantityMax: null,
+      quantityIncrement: null,
+      priceBreaks: [],
     })),
     appliedPromotions: [], // Will be re-evaluated by form
     selectedShippingOption: order.shippingMethodId ? {

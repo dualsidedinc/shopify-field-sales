@@ -40,20 +40,16 @@ const COMPANY_FULL_DETAILS_QUERY = `#graphql
               address1
               address2
               city
-              province
-              provinceCode
+              zoneCode
               zip
-              country
               countryCode
             }
             billingAddress {
               address1
               address2
               city
-              province
-              provinceCode
+              zoneCode
               zip
-              country
               countryCode
             }
             buyerExperienceConfiguration {
@@ -151,10 +147,8 @@ interface ShopifyAddress {
   address1: string | null;
   address2: string | null;
   city: string | null;
-  province: string | null;
-  provinceCode: string | null;
+  zoneCode: string | null;
   zip: string | null;
-  country: string | null;
   countryCode: string | null;
 }
 
@@ -330,10 +324,10 @@ export async function syncCompanyDetails(
           address1: address?.address1,
           address2: address?.address2,
           city: address?.city,
-          province: address?.province,
-          provinceCode: address?.provinceCode,
+          province: address?.zoneCode,
+          provinceCode: address?.zoneCode,
           zipcode: address?.zip,
-          country: address?.country || "US",
+          country: address?.countryCode || "US",
           countryCode: address?.countryCode || "US",
           phone: location.phone,
           isShippingAddress: !!location.shippingAddress,
@@ -349,10 +343,10 @@ export async function syncCompanyDetails(
           address1: address?.address1,
           address2: address?.address2,
           city: address?.city,
-          province: address?.province,
-          provinceCode: address?.provinceCode,
+          province: address?.zoneCode,
+          provinceCode: address?.zoneCode,
           zipcode: address?.zip,
-          country: address?.country || "US",
+          country: address?.countryCode || "US",
           countryCode: address?.countryCode || "US",
           phone: location.phone,
           isShippingAddress: !!location.shippingAddress,

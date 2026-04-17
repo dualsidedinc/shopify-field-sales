@@ -1,13 +1,14 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
-import { ChevronRight, Plus } from 'lucide-react';
+import { Search, Plus } from 'lucide-react';
 import { api } from '@/lib/api';
+import { OrderList, type OrderListItemData } from '@/components/lists/OrderListItem';
 
 type StatusFilter = 'all' | 'DRAFT' | 'AWAITING_REVIEW' | 'PENDING' | 'PAID' | 'REFUNDED';
 
-interface OrderListItem {
+interface OrderApiItem {
   id: string;
   orderNumber: string;
   shopifyOrderId: string | null;
@@ -25,112 +26,125 @@ interface OrderListItem {
 }
 
 export default function OrdersPage() {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [orders, setOrders] = useState<OrderListItem[]>([]);
+  const [orders, setOrders] = useState<OrderApiItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
+  const [totalCount, setTotalCount] = useState(0);
+  const initialLoad = useRef(true);
 
-  const fetchOrders = useCallback(async () => {
-    setLoading(true);
+  // Debounce search input
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    if (!initialLoad.current) {
+      setPage(1);
+      setOrders([]);
+    }
+    initialLoad.current = false;
+  }, [debouncedSearch, statusFilter]);
+
+  const fetchOrders = useCallback(async (pageNum: number, append: boolean = false) => {
+    if (append) {
+      setLoadingMore(true);
+    } else {
+      setLoading(true);
+    }
+
     try {
       const { data } = await api.client.orders.list({
-        page,
-        pageSize: 20,
+        page: pageNum,
+        pageSize: 30,
+        query: debouncedSearch || undefined,
+        status: statusFilter !== 'all' ? statusFilter : undefined,
       });
 
       if (data) {
-        setOrders(data.items as unknown as OrderListItem[]);
+        if (append) {
+          setOrders(prev => [...prev, ...(data.items as unknown as OrderApiItem[])]);
+        } else {
+          setOrders(data.items as unknown as OrderApiItem[]);
+        }
         setHasMore(data.pagination.hasNextPage);
+        setTotalCount(data.pagination.totalItems);
       }
     } catch (error) {
       console.error('Error fetching orders:', error);
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
-  }, [page]);
+  }, [debouncedSearch, statusFilter]);
 
   useEffect(() => {
-    fetchOrders();
-  }, [fetchOrders]);
+    fetchOrders(page, page > 1);
+  }, [page, fetchOrders]);
 
-  const formatPrice = (cents: number, currency: string = 'USD') => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency,
-    }).format(cents / 100);
-  };
-
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-    if (diffDays === 0) {
-      return 'Today';
-    } else if (diffDays === 1) {
-      return 'Yesterday';
-    } else if (diffDays < 7) {
-      return `${diffDays} days ago`;
-    } else {
-      return new Intl.DateTimeFormat('en-US', {
-        month: 'short',
-        day: 'numeric',
-      }).format(date);
+  const loadMore = () => {
+    if (!loadingMore && hasMore) {
+      setPage(prev => prev + 1);
     }
   };
 
-  const getStatusBadge = (status: string) => {
-    const s = status.toLowerCase();
-    if (s.includes('draft')) return 'badge-draft';
-    if (s.includes('awaiting')) return 'badge-awaiting';
-    if (s.includes('fulfilled') || s.includes('paid')) return 'badge-paid';
-    if (s.includes('pending')) return 'badge-pending';
-    if (s.includes('cancelled') || s.includes('refund')) return 'badge-cancelled';
-    return 'badge-default';
-  };
+  // Convert to shared component format
+  const orderListData: OrderListItemData[] = orders.map((o) => ({
+    id: o.id,
+    orderNumber: o.orderNumber,
+    shopifyOrderNumber: o.shopifyOrderNumber,
+    companyName: o.companyName,
+    totalCents: o.totalCents,
+    currency: o.currency,
+    status: o.status,
+    placedAt: o.placedAt,
+    createdAt: o.createdAt,
+  }));
 
-  const formatStatus = (status: string) => {
-    // Convert AWAITING_REVIEW to "Awaiting Review", DRAFT to "Draft", etc.
-    return status
-      .split('_')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join(' ');
-  };
-
-  // Filter orders by status (client-side for now)
-  const filteredOrders = orders.filter((order) => {
-    if (statusFilter === 'all') return true;
-    return order.status === statusFilter;
-  });
-
-  // Filter labels for display
   const filterLabels: Record<StatusFilter, string> = {
     all: 'All',
     DRAFT: 'Draft',
-    AWAITING_REVIEW: 'In Review',
+    AWAITING_REVIEW: 'Review',
     PENDING: 'Pending',
     PAID: 'Paid',
     REFUNDED: 'Refunded',
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex justify-end">
-        <Link href="/orders/create" className="btn-primary flex items-center gap-1.5">
+    <div className="space-y-3">
+      {/* Header with search and new order button */}
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <input
+            type="search"
+            placeholder="Search orders..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="input pl-9 h-10 text-sm"
+          />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        </div>
+        <Link href="/orders/create" className="btn-primary flex items-center gap-1 h-10 px-3">
           <Plus className="w-4 h-4" />
-          New Order
+          <span className="hidden sm:inline">New</span>
         </Link>
       </div>
 
-      {/* Status Filter */}
-      <div className="flex gap-2 overflow-x-auto pb-2 -mx-4 px-4">
+      {/* Status Filter Pills */}
+      <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-4 px-4 scrollbar-hide">
         {(['all', 'DRAFT', 'AWAITING_REVIEW', 'PENDING', 'PAID', 'REFUNDED'] as const).map((status) => (
           <button
             key={status}
             onClick={() => setStatusFilter(status)}
-            className={`px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
+            className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
               statusFilter === status
                 ? 'bg-primary-600 text-white'
                 : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
@@ -141,66 +155,34 @@ export default function OrdersPage() {
         ))}
       </div>
 
+      {/* Results count */}
+      {!loading && totalCount > 0 && (
+        <p className="text-xs text-gray-500 px-1">
+          {totalCount} order{totalCount !== 1 ? 's' : ''}
+          {debouncedSearch && ` matching "${debouncedSearch}"`}
+        </p>
+      )}
+
       {/* Order List */}
-      <div className="space-y-3">
-        {loading ? (
-          <div className="card text-center py-8">
-            <p className="text-gray-500">Loading orders...</p>
-          </div>
-        ) : filteredOrders.length === 0 ? (
-          <div className="card text-center py-8">
-            <p className="text-gray-500">No orders found</p>
-            <p className="text-sm text-gray-400 mt-1">
-              {statusFilter !== 'all'
-                ? 'Try a different filter'
-                : 'Orders will appear here after placement'}
-            </p>
-          </div>
-        ) : (
-          filteredOrders.map((order) => (
-            <Link
-              key={order.id}
-              href={`/orders/${order.id}`}
-              className="card-interactive flex items-center gap-3"
-            >
-              <div className="flex-1 min-w-0">
-                {/* Header: Order number and status */}
-                <div className="flex items-center gap-2 mb-1">
-                  <p className="font-semibold text-gray-900">
-                    {order.shopifyOrderNumber || order.orderNumber}
-                  </p>
-                  <span className={getStatusBadge(order.status)}>
-                    {formatStatus(order.status) || 'Draft'}
-                  </span>
-                </div>
-
-                {/* Company and Contact */}
-                <p className="text-sm font-medium text-gray-700 truncate">{order.companyName}</p>
-
-                {/* Total and Date */}
-                <div className="flex items-center gap-2 mt-1">
-                  <p className="text-sm font-semibold text-gray-900">
-                    {formatPrice(order.totalCents, order.currency)}
-                  </p>
-                  <span className="text-gray-300">•</span>
-                  <p className="text-xs text-gray-500">
-                    {formatDate(order.placedAt || order.createdAt)}
-                  </p>
-                </div>
-              </div>
-              <ChevronRight className="w-5 h-5 text-gray-400 flex-shrink-0" />
-            </Link>
-          ))
-        )}
-      </div>
+      <OrderList
+        orders={orderListData}
+        loading={loading}
+        emptyMessage="No orders found"
+        emptySubMessage={
+          debouncedSearch || statusFilter !== 'all'
+            ? 'Try adjusting your filters'
+            : 'Create your first order to get started'
+        }
+      />
 
       {/* Load More */}
       {hasMore && !loading && (
         <button
-          onClick={() => setPage(page + 1)}
-          className="btn-secondary w-full"
+          onClick={loadMore}
+          disabled={loadingMore}
+          className="btn-secondary w-full text-sm py-2"
         >
-          Load More
+          {loadingMore ? 'Loading...' : `Load more (${orders.length} of ${totalCount})`}
         </button>
       )}
     </div>

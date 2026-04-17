@@ -112,6 +112,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   // Handle form update (territory details only)
   const name = formData.get("name") as string;
+  const code = formData.get("code") as string | null;
   const description = formData.get("description") as string | null;
   const stateCodesStr = formData.get("stateCodes") as string | null;
   const zipcodesStr = formData.get("zipcodes") as string | null;
@@ -125,6 +126,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 
   const result = await updateTerritory(shop.id, territoryId, {
     name,
+    code: code || null,
     description: description || null,
     stateCodes,
     zipcodes,
@@ -175,6 +177,7 @@ export default function TerritoryDetailPage() {
     fetcher.submit(
       {
         name: data.name,
+        code: data.code || "",
         description: data.description || "",
         stateCodes: JSON.stringify(data.stateCodes),
         zipcodes: JSON.stringify(data.zipcodes),

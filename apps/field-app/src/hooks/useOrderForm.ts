@@ -13,6 +13,12 @@ import type { CompanyOption } from '@/components/pickers/CompanyPicker';
 import type { ContactOption } from '@/components/pickers/ContactPicker';
 import type { LocationOption } from '@/components/pickers/LocationPicker';
 
+// Price break for volume pricing
+export interface PriceBreak {
+  minimumQuantity: number;
+  priceCents: number;
+}
+
 // Line item type
 export interface OrderLineItem {
   id: string;
@@ -23,12 +29,78 @@ export interface OrderLineItem {
   variantTitle: string | null;
   imageUrl: string | null;
   quantity: number;
-  unitPriceCents: number;
+  unitPriceCents: number;    // Current price (may change with volume pricing)
+  basePriceCents: number;    // Base price before volume pricing
   discountCents: number;
   totalCents: number;
   isFreeItem?: boolean;
   promotionId?: string;
   promotionName?: string;
+  // Quantity rules from B2B catalog
+  quantityMin: number | null;
+  quantityMax: number | null;
+  quantityIncrement: number | null;
+  priceBreaks: PriceBreak[];
+}
+
+/**
+ * Calculate the effective unit price based on quantity and price breaks
+ */
+export function getEffectiveUnitPrice(
+  basePriceCents: number,
+  quantity: number,
+  priceBreaks: PriceBreak[]
+): number {
+  if (priceBreaks.length === 0) return basePriceCents;
+
+  // Sort by minimumQuantity descending to find the highest applicable tier
+  const sortedBreaks = [...priceBreaks].sort((a, b) => b.minimumQuantity - a.minimumQuantity);
+
+  for (const tier of sortedBreaks) {
+    if (quantity >= tier.minimumQuantity) {
+      return tier.priceCents;
+    }
+  }
+
+  return basePriceCents;
+}
+
+/**
+ * Validate and adjust quantity to meet rules
+ */
+export function validateQuantity(
+  requestedQuantity: number,
+  min: number | null,
+  max: number | null,
+  increment: number | null
+): number {
+  let quantity = requestedQuantity;
+
+  // Apply minimum
+  const effectiveMin = min ?? 1;
+  if (quantity < effectiveMin) {
+    quantity = effectiveMin;
+  }
+
+  // Apply maximum
+  if (max !== null && quantity > max) {
+    quantity = max;
+  }
+
+  // Apply increment (snap to nearest valid value)
+  if (increment && increment > 1) {
+    const remainder = (quantity - effectiveMin) % increment;
+    if (remainder !== 0) {
+      // Round up to next valid increment
+      quantity = quantity - remainder + increment;
+      // Re-check max after snapping
+      if (max !== null && quantity > max) {
+        quantity = quantity - increment;
+      }
+    }
+  }
+
+  return Math.max(effectiveMin, quantity);
 }
 
 // Promotion result from engine
@@ -233,23 +305,46 @@ export function useOrderForm(initialData?: InitialOrderData) {
       let newLineItems: OrderLineItem[];
 
       if (existingIndex >= 0) {
+        // Existing item - add to quantity
         newLineItems = prev.lineItems.map((li, index) => {
           if (index === existingIndex) {
-            const newQty = li.quantity + item.quantity;
+            const increment = li.quantityIncrement ?? 1;
+            const newQty = validateQuantity(
+              li.quantity + (item.quantity || increment),
+              li.quantityMin,
+              li.quantityMax,
+              li.quantityIncrement
+            );
+            const unitPrice = getEffectiveUnitPrice(li.basePriceCents, newQty, li.priceBreaks);
             return {
               ...li,
               quantity: newQty,
-              totalCents: li.unitPriceCents * newQty - li.discountCents,
+              unitPriceCents: unitPrice,
+              totalCents: unitPrice * newQty - li.discountCents,
             };
           }
           return li;
         });
       } else {
+        // New item - use min quantity as starting point
+        const initialQty = validateQuantity(
+          item.quantity || item.quantityMin || 1,
+          item.quantityMin,
+          item.quantityMax,
+          item.quantityIncrement
+        );
+        const basePriceCents = item.basePriceCents || item.unitPriceCents;
+        const unitPrice = getEffectiveUnitPrice(basePriceCents, initialQty, item.priceBreaks || []);
+
         const newItem: OrderLineItem = {
           ...item,
           id: generateTempId(),
+          quantity: initialQty,
+          basePriceCents,
+          unitPriceCents: unitPrice,
           discountCents: 0,
-          totalCents: item.unitPriceCents * item.quantity,
+          totalCents: unitPrice * initialQty,
+          priceBreaks: item.priceBreaks || [],
         };
         newLineItems = [...prev.lineItems, newItem];
       }
@@ -266,10 +361,20 @@ export function useOrderForm(initialData?: InitialOrderData) {
       ...prev,
       lineItems: prev.lineItems.map((item) => {
         if (item.id === itemId) {
+          // Validate quantity against rules
+          const validQty = validateQuantity(
+            quantity,
+            item.quantityMin,
+            item.quantityMax,
+            item.quantityIncrement
+          );
+          // Apply volume pricing
+          const unitPrice = getEffectiveUnitPrice(item.basePriceCents, validQty, item.priceBreaks);
           return {
             ...item,
-            quantity,
-            totalCents: item.unitPriceCents * quantity - item.discountCents,
+            quantity: validQty,
+            unitPriceCents: unitPrice,
+            totalCents: unitPrice * validQty - item.discountCents,
           };
         }
         return item;

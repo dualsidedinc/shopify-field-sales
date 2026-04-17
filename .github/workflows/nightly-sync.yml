@@ -1,0 +1,86 @@
+name: Nightly Data Sync
+
+on:
+  # Run nightly at 02:00 UTC
+  schedule:
+    - cron: '0 2 * * *'
+
+  # Allow manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      objects:
+        description: 'Object types to sync (companies, products, catalogs, all)'
+        required: false
+        default: 'all'
+      shop_id:
+        description: 'Specific shop ID to sync (leave empty for all shops)'
+        required: false
+        default: ''
+
+jobs:
+  sync-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Sync Data from Shopify
+        env:
+          APP_URL: ${{ secrets.SHOPIFY_APP_URL }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
+        run: |
+          echo "Starting nightly sync at $(date -u)"
+
+          # Build query params
+          QUERY_PARAMS=""
+          if [ -n "${{ github.event.inputs.objects }}" ]; then
+            QUERY_PARAMS="?objects=${{ github.event.inputs.objects }}"
+          fi
+          if [ -n "${{ github.event.inputs.shop_id }}" ]; then
+            if [ -n "$QUERY_PARAMS" ]; then
+              QUERY_PARAMS="${QUERY_PARAMS}&shopId=${{ github.event.inputs.shop_id }}"
+            else
+              QUERY_PARAMS="?shopId=${{ github.event.inputs.shop_id }}"
+            fi
+          fi
+
+          response=$(curl -s -w "\n%{http_code}" -X POST \
+            "${APP_URL}/api/cron/sync${QUERY_PARAMS}" \
+            -H "Content-Type: application/json" \
+            -H "x-app-secret: ${APP_SECRET}")
+
+          http_code=$(echo "$response" | tail -n1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "Response code: $http_code"
+          echo "Response body:"
+          echo "$body" | jq '.' 2>/dev/null || echo "$body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "Nightly sync failed with status $http_code"
+            exit 1
+          fi
+
+          # Extract summary for logging
+          echo ""
+          echo "=== Summary ==="
+          echo "$body" | jq -r '"Duration: \(.duration)ms | Success: \(.success)"' 2>/dev/null || true
+
+          # Show per-object results
+          echo ""
+          echo "=== Object Sync Results ==="
+          echo "$body" | jq -r '.results | to_entries | .[] | "\(.key): synced=\(.value.synced // 0), deleted=\(.value.deleted // 0), errors=\(.value.errors // 0)"' 2>/dev/null || true
+
+          # Check if sync was successful
+          success=$(echo "$body" | jq -r '.success' 2>/dev/null)
+          if [ "$success" != "true" ]; then
+            echo "Sync completed with errors:"
+            echo "$body" | jq -r '.errors[]' 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "Nightly sync completed successfully"
+
+      - name: Notify on Failure
+        if: failure()
+        run: |
+          echo "Nightly sync failed! Check the logs above for details."
+          # Add Slack/email notification here if needed

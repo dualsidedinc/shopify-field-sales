@@ -50,6 +50,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const formData = await request.formData();
   const name = formData.get("name") as string;
+  const code = formData.get("code") as string | null;
   const description = formData.get("description") as string | null;
   const stateCodesStr = formData.get("stateCodes") as string | null;
   const zipcodesStr = formData.get("zipcodes") as string | null;
@@ -64,6 +65,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const result = await createTerritory({
     shopId: shop.id,
     name,
+    code: code || null,
     description: description || null,
     stateCodes,
     zipcodes,
@@ -94,6 +96,7 @@ export default function NewTerritoryPage() {
     fetcher.submit(
       {
         name: data.name,
+        code: data.code || "",
         description: data.description || "",
         stateCodes: JSON.stringify(data.stateCodes),
         zipcodes: JSON.stringify(data.zipcodes),
@@ -105,6 +108,9 @@ export default function NewTerritoryPage() {
   if (!shopId) {
     return (
       <s-page heading="Add Territory">
+        <s-link slot="breadcrumb-actions" href="/app/territories">
+          Territories
+        </s-link>
         <s-section>
           <s-stack gap="base">
             <s-paragraph>Your store needs to complete setup first.</s-paragraph>
@@ -117,6 +123,9 @@ export default function NewTerritoryPage() {
 
   return (
     <s-page heading="Add Territory">
+      <s-link slot="breadcrumb-actions" href="/app/territories">
+        Territories
+      </s-link>
       <TerritoryForm
         states={states}
         onSubmit={handleSubmit}

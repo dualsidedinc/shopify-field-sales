@@ -13,6 +13,7 @@ Sales reps are users of the field-app mobile application. They're managed in the
 {
   id: string;
   shopId: string;
+  externalId?: string;        // Optional business identifier
   email: string;
   firstName: string;
   lastName: string;
@@ -26,6 +27,15 @@ Sales reps are users of the field-app mobile application. They're managed in the
   companies: Company[];       // Direct assignments
 }
 ```
+
+### External ID
+
+The optional `externalId` field provides a business identifier for the sales rep. This is useful for:
+- Integration with external systems (ERP, CRM, payroll)
+- Commission tracking
+- Reporting and analytics
+
+The external ID is automatically set as a Shopify order metafield when orders are placed. See [Orders](./orders.md#order-metafields) for details.
 
 ### RepTerritory
 ```typescript
@@ -113,6 +123,7 @@ const result = await createSalesRep({
   lastName: "Smith",
   email: "john@example.com",
   phone: "555-1234",
+  externalId: "EMP-001",              // Optional business identifier
   role: "REP",
   territoryIds: ["terr-1", "terr-2"],  // First is primary
 });
@@ -122,6 +133,34 @@ Notes:
 - Email must be unique per shop
 - First territory in array is marked as primary
 - `activatedAt` is set automatically for billing
+- `externalId` is optional and used for external system integration
+
+### Input Types
+
+```typescript
+interface CreateSalesRepInput {
+  shopId: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string | null;
+  externalId?: string | null;    // Optional business identifier
+  role?: RepRole;
+  territoryIds?: string[];
+  approvalThresholdCents?: number | null;
+}
+
+interface UpdateSalesRepInput {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string | null;
+  externalId?: string | null;    // Update external ID
+  role?: RepRole;
+  territoryIds?: string[];
+  approvalThresholdCents?: number | null;
+}
+```
 
 ## Updating Territory Assignments
 

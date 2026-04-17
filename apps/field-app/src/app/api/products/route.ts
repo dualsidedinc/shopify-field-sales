@@ -3,6 +3,11 @@ import { prisma } from '@/lib/db/prisma';
 import { getAuthContext } from '@/lib/auth';
 import type { ApiError } from '@/types';
 
+export interface PriceBreak {
+  minimumQuantity: number;
+  priceCents: number;
+}
+
 export interface ProductVariant {
   id: string;
   shopifyVariantId: string;
@@ -13,6 +18,11 @@ export interface ProductVariant {
   hasCatalogPrice: boolean;
   available: boolean;
   inventoryQuantity: number | null;
+  // Quantity rules from B2B catalog
+  quantityMin: number | null;
+  quantityMax: number | null;
+  quantityIncrement: number | null;
+  priceBreaks: PriceBreak[];
 }
 
 export interface ProductListItem {
@@ -38,13 +48,22 @@ export interface ProductsResponse {
   };
 }
 
+interface CatalogItemData {
+  priceCents: number;
+  compareAtPriceCents: number | null;
+  quantityMin: number | null;
+  quantityMax: number | null;
+  quantityIncrement: number | null;
+  priceBreaks: PriceBreak[];
+}
+
 /**
  * Get catalog pricing for a company location
- * Returns a map of shopifyVariantId -> { priceCents, compareAtPriceCents }
+ * Returns a map of shopifyVariantId -> catalog item data with pricing, rules, and price breaks
  */
 async function getCatalogPricing(
   companyLocationId: string
-): Promise<Map<string, { priceCents: number; compareAtPriceCents: number | null }>> {
+): Promise<Map<string, CatalogItemData>> {
   const catalogItems = await prisma.catalogItem.findMany({
     where: {
       catalog: {
@@ -58,13 +77,32 @@ async function getCatalogPricing(
       shopifyVariantId: true,
       priceCents: true,
       compareAtPriceCents: true,
+      quantityMin: true,
+      quantityMax: true,
+      quantityIncrement: true,
+      priceBreaks: {
+        select: {
+          minimumQuantity: true,
+          priceCents: true,
+        },
+        orderBy: {
+          minimumQuantity: 'asc',
+        },
+      },
     },
   });
 
   return new Map(
     catalogItems.map((item) => [
       item.shopifyVariantId,
-      { priceCents: item.priceCents, compareAtPriceCents: item.compareAtPriceCents },
+      {
+        priceCents: item.priceCents,
+        compareAtPriceCents: item.compareAtPriceCents,
+        quantityMin: item.quantityMin,
+        quantityMax: item.quantityMax,
+        quantityIncrement: item.quantityIncrement,
+        priceBreaks: item.priceBreaks,
+      },
     ])
   );
 }
@@ -103,7 +141,7 @@ export async function GET(request: Request) {
     const skip = (page - 1) * pageSize;
 
     // Get catalog pricing if location is provided
-    let catalogPricing: Map<string, { priceCents: number; compareAtPriceCents: number | null }> | null = null;
+    let catalogPricing: Map<string, CatalogItemData> | null = null;
     let availableVariants: Set<string> | null = null;
     const hasCatalog = !!companyLocationId;
 
@@ -169,17 +207,22 @@ export async function GET(request: Request) {
           productType: product.productType,
           vendor: product.vendor,
           variants: filteredVariants.map((variant) => {
-            const catalogPrice = catalogPricing?.get(variant.shopifyVariantId);
+            const catalogData = catalogPricing?.get(variant.shopifyVariantId);
             return {
               id: variant.id,
               shopifyVariantId: variant.shopifyVariantId,
               title: variant.title,
               sku: variant.sku,
               basePriceCents: variant.priceCents,
-              priceCents: catalogPrice?.priceCents ?? variant.priceCents,
-              hasCatalogPrice: !!catalogPrice,
+              priceCents: catalogData?.priceCents ?? variant.priceCents,
+              hasCatalogPrice: !!catalogData,
               available: variant.isAvailable,
               inventoryQuantity: variant.inventoryQuantity,
+              // Quantity rules from B2B catalog
+              quantityMin: catalogData?.quantityMin ?? null,
+              quantityMax: catalogData?.quantityMax ?? null,
+              quantityIncrement: catalogData?.quantityIncrement ?? null,
+              priceBreaks: catalogData?.priceBreaks ?? [],
             };
           }),
         };

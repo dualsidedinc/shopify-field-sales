@@ -51,8 +51,6 @@ export async function GET() {
       accountCount,
       pendingOrders,
       draftOrdersList,
-      awaitingReviewOrders,
-      placedOrders,
       latestCompanies,
       quota,
       paidRevenue,
@@ -125,7 +123,7 @@ export async function GET() {
         },
       }),
 
-      // Draft orders
+      // Draft orders (orders needing action)
       prisma.order.findMany({
         where: {
           shopId,
@@ -134,36 +132,6 @@ export async function GET() {
           deletedAt: null,
         },
         orderBy: { updatedAt: 'desc' },
-        take: 5,
-        include: {
-          company: { select: { name: true } },
-        },
-      }),
-
-      // Awaiting review orders
-      prisma.order.findMany({
-        where: {
-          shopId,
-          ...repFilter,
-          status: 'AWAITING_REVIEW',
-          deletedAt: null,
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 5,
-        include: {
-          company: { select: { name: true } },
-        },
-      }),
-
-      // Placed orders (PENDING, PAID, etc. - everything that's been submitted)
-      prisma.order.findMany({
-        where: {
-          shopId,
-          ...repFilter,
-          status: { in: ['PENDING', 'PAID', 'CANCELLED', 'REFUNDED'] },
-          deletedAt: null,
-        },
-        orderBy: { placedAt: 'desc' },
         take: 5,
         include: {
           company: { select: { name: true } },
@@ -192,6 +160,7 @@ export async function GET() {
               name: true,
               accountNumber: true,
               createdAt: true,
+              territory: { select: { name: true } },
             },
           })
         : prisma.company.findMany({
@@ -203,6 +172,7 @@ export async function GET() {
               name: true,
               accountNumber: true,
               createdAt: true,
+              territory: { select: { name: true } },
             },
           }),
 
@@ -315,13 +285,12 @@ export async function GET() {
       },
       orders: {
         draft: draftOrdersList.map(formatOrder),
-        awaitingReview: awaitingReviewOrders.map(formatOrder),
-        placed: placedOrders.map(formatOrder),
       },
       latestCompanies: latestCompanies.map((c) => ({
         id: c.id,
         name: c.name,
         accountNumber: c.accountNumber,
+        territoryName: c.territory?.name || null,
         createdAt: c.createdAt.toISOString(),
       })),
     };
