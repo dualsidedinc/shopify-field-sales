@@ -2,6 +2,19 @@ import { prisma } from "@field-sales/database";
 import type { BillingPlan, BillingStatus } from "@prisma/client";
 
 // ============================================
+// Environment Configuration
+// ============================================
+
+/**
+ * Check if Shopify Billing should be bypassed for this instance.
+ * Used for custom app distributions where billing is handled outside Shopify.
+ * Set BYPASS_SHOPIFY_BILLING=true in environment to enable.
+ */
+export function shouldBypassShopifyBilling(): boolean {
+  return process.env.BYPASS_SHOPIFY_BILLING === "true";
+}
+
+// ============================================
 // Plan Configuration
 // ============================================
 
@@ -238,6 +251,19 @@ export async function getBillingStatus(shopId: string): Promise<BillingStatusInf
       isActive: false,
       isTrial: false,
       requiresBilling: true,
+    };
+  }
+
+  // Instance-level bypass: always considered active, no Shopify billing required
+  if (shouldBypassShopifyBilling()) {
+    return {
+      status: shop.billingStatus === "INACTIVE" ? "ACTIVE" : shop.billingStatus,
+      plan: shop.billingPlan,
+      trialEndsAt: null,
+      trialDaysRemaining: null,
+      isActive: true,
+      isTrial: false,
+      requiresBilling: false,
     };
   }
 
@@ -1029,6 +1055,8 @@ export async function reportDailyUsageForShop(
   shopId: string,
   admin: { graphql: (query: string, options?: { variables: Record<string, unknown> }) => Promise<Response> }
 ): Promise<DailyUsageResult | null> {
+  const bypassBilling = shouldBypassShopifyBilling();
+
   const shop = await prisma.shop.findUnique({
     where: { id: shopId },
     select: {
@@ -1040,13 +1068,19 @@ export async function reportDailyUsageForShop(
     },
   });
 
-  if (!shop || !shop.billingPlan || !shop.usageLineItemId) {
+  if (!shop || !shop.billingPlan) {
     console.log(`[DailyUsage] Shop ${shopId} not configured for billing`);
     return null;
   }
 
-  // Skip if not active or in trial
-  if (shop.billingStatus !== "ACTIVE" && shop.billingStatus !== "TRIAL") {
+  // For bypassed instances, we don't need usageLineItemId - we just track locally
+  if (!bypassBilling && !shop.usageLineItemId) {
+    console.log(`[DailyUsage] Shop ${shopId} missing usageLineItemId`);
+    return null;
+  }
+
+  // Skip if not active or in trial (unless bypassed)
+  if (!bypassBilling && shop.billingStatus !== "ACTIVE" && shop.billingStatus !== "TRIAL") {
     console.log(`[DailyUsage] Shop ${shopId} billing status is ${shop.billingStatus}, skipping`);
     return null;
   }
@@ -1112,28 +1146,44 @@ export async function reportDailyUsageForShop(
     const description = `Revenue share (${planConfig.revenueSharePercent}% of $${(netRevenueCents / 100).toFixed(2)} net revenue)`;
     const idempotencyKey = `revenue-${shopId}-${today}`;
 
-    const usageResult = await reportUsageCharge(
-      admin,
-      shop.usageLineItemId,
-      revenueShareCents,
-      description,
-      idempotencyKey
-    );
+    // Skip Shopify API call if bypassed, but still track locally
+    if (bypassBilling) {
+      console.log(`[DailyUsage] Shop ${shop.shopifyDomain} bypasses Shopify billing - logging revenue share locally: $${(revenueShareCents / 100).toFixed(2)}`);
+      result.revenueShare.reported = true;
 
-    result.revenueShare.reported = usageResult.success;
-    result.revenueShare.usageRecordId = usageResult.usageRecordId;
-    result.revenueShare.error = usageResult.error;
-
-    if (usageResult.success) {
-      // Mark all orders as reported
+      // Mark all orders as reported (locally tracked)
       const allOrderIds = [...paidOrders, ...refundedOrders].map(o => o.id);
       await prisma.order.updateMany({
         where: { id: { in: allOrderIds } },
         data: {
           revenueShareReportedAt: new Date(),
-          revenueShareUsageRecordId: usageResult.usageRecordId,
+          revenueShareUsageRecordId: `local-${idempotencyKey}`,
         },
       });
+    } else {
+      const usageResult = await reportUsageCharge(
+        admin,
+        shop.usageLineItemId!,
+        revenueShareCents,
+        description,
+        idempotencyKey
+      );
+
+      result.revenueShare.reported = usageResult.success;
+      result.revenueShare.usageRecordId = usageResult.usageRecordId;
+      result.revenueShare.error = usageResult.error;
+
+      if (usageResult.success) {
+        // Mark all orders as reported
+        const allOrderIds = [...paidOrders, ...refundedOrders].map(o => o.id);
+        await prisma.order.updateMany({
+          where: { id: { in: allOrderIds } },
+          data: {
+            revenueShareReportedAt: new Date(),
+            revenueShareUsageRecordId: usageResult.usageRecordId,
+          },
+        });
+      }
     }
   } else {
     // No revenue share to report, but still mark orders as processed
@@ -1182,20 +1232,12 @@ export async function reportDailyUsageForShop(
       const description = `Extra sales reps (${extraRepsToCharge} × $${(perRepProrated / 100).toFixed(2)} prorated for ${daysRemaining} days)`;
       const idempotencyKey = `reps-${shopId}-${today}-${activeRepCount}`;
 
-      const usageResult = await reportUsageCharge(
-        admin,
-        shop.usageLineItemId,
-        proratedChargeCents,
-        description,
-        idempotencyKey
-      );
+      // Skip Shopify API call if bypassed, but still track locally
+      if (bypassBilling) {
+        console.log(`[DailyUsage] Shop ${shop.shopifyDomain} bypasses Shopify billing - logging extra reps locally: ${extraRepsToCharge} reps, $${(proratedChargeCents / 100).toFixed(2)}`);
+        result.extraReps.reported = true;
 
-      result.extraReps.reported = usageResult.success;
-      result.extraReps.usageRecordId = usageResult.usageRecordId;
-      result.extraReps.error = usageResult.error;
-
-      if (usageResult.success) {
-        // Update billing period with new charged count
+        // Update billing period with new charged count (locally tracked)
         await prisma.billingPeriod.update({
           where: { id: billingPeriod.id },
           data: {
@@ -1205,6 +1247,31 @@ export async function reportDailyUsageForShop(
             repChargesCents: { increment: proratedChargeCents },
           },
         });
+      } else {
+        const usageResult = await reportUsageCharge(
+          admin,
+          shop.usageLineItemId!,
+          proratedChargeCents,
+          description,
+          idempotencyKey
+        );
+
+        result.extraReps.reported = usageResult.success;
+        result.extraReps.usageRecordId = usageResult.usageRecordId;
+        result.extraReps.error = usageResult.error;
+
+        if (usageResult.success) {
+          // Update billing period with new charged count
+          await prisma.billingPeriod.update({
+            where: { id: billingPeriod.id },
+            data: {
+              extraRepsCharged: billingPeriod.extraRepsCharged + extraRepsToCharge,
+              activeRepCount,
+              extraRepCount: extraRepsNeeded,
+              repChargesCents: { increment: proratedChargeCents },
+            },
+          });
+        }
       }
     } else {
       result.extraReps.reported = true; // Nothing to report is success
@@ -1223,11 +1290,19 @@ export async function reportDailyUsageForShop(
  * Get all shops that need daily usage reporting
  */
 export async function getShopsForDailyUsageReporting(): Promise<Array<{ id: string; shopifyDomain: string }>> {
+  const bypassBilling = shouldBypassShopifyBilling();
+
+  // For bypassed instances, include all shops with a billing plan
+  // For normal instances, only include shops with active Shopify billing
   return prisma.shop.findMany({
     where: {
-      billingStatus: { in: ["ACTIVE", "TRIAL"] },
-      usageLineItemId: { not: null },
       billingPlan: { not: null },
+      ...(bypassBilling
+        ? {} // All shops with a plan
+        : {
+            billingStatus: { in: ["ACTIVE", "TRIAL"] },
+            usageLineItemId: { not: null },
+          }),
     },
     select: {
       id: true,

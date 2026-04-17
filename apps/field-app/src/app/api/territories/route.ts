@@ -54,6 +54,7 @@ export async function GET(request: Request) {
     const items: TerritoryListItem[] = territories.map((t) => ({
       id: t.id,
       name: t.name,
+      code: t.code,
       description: t.description,
       isActive: t.isActive,
       zipcodeCount: t._count.zipcodes,

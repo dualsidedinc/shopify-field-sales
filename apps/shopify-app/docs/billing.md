@@ -322,6 +322,65 @@ if (status.requiresBilling) {
 }
 ```
 
+## Custom App Distributions (Bypass Shopify Billing)
+
+For custom app distributions where billing is handled outside Shopify (e.g., direct contracts with enterprise clients), you can bypass the Shopify Billing API while still tracking usage locally.
+
+### Configuration
+
+Set this environment variable on your custom instance:
+
+```bash
+BYPASS_SHOPIFY_BILLING=true
+```
+
+**Note:** Only set this for custom distribution instances. Standard instances should NOT set this variable (or leave it unset) - Shopify Billing will be used normally.
+
+### Behavior When Bypassed
+
+| Function | Normal | Bypassed |
+|----------|--------|----------|
+| `getBillingStatus()` | Checks subscription status | Returns `isActive: true`, `requiresBilling: false` |
+| `reportDailyUsageForShop()` | Reports to Shopify API | Logs locally, skips API call |
+| `getShopsForDailyUsageReporting()` | Active shops with subscriptions | All shops with a billing plan |
+
+### What Gets Tracked Locally
+
+Even with Shopify Billing bypassed, usage is still calculated and stored in the database:
+
+| Data | Location |
+|------|----------|
+| Revenue share per period | `BillingPeriod.revenueShareCents` |
+| Extra rep charges | `BillingPeriod.repChargesCents` |
+| Active/extra rep counts | `BillingPeriod.activeRepCount`, `extraRepCount` |
+| Order reporting timestamps | `Order.revenueShareReportedAt` |
+| Usage record IDs | `Order.revenueShareUsageRecordId` (prefixed with `local-`) |
+
+### Querying Usage for Custom Billing
+
+```typescript
+// Get usage for a billing period
+const period = await prisma.billingPeriod.findFirst({
+  where: { shopId, status: "open" },
+});
+
+console.log({
+  revenueShare: period.revenueShareCents / 100,
+  extraReps: period.extraRepCount,
+  repCharges: period.repChargesCents / 100,
+});
+```
+
+### Helper Function
+
+```typescript
+import { shouldBypassShopifyBilling } from "./services/billing.server";
+
+if (shouldBypassShopifyBilling()) {
+  // Custom billing logic
+}
+```
+
 ## Setup & Deployment
 
 ### 1. Deploy Webhooks
@@ -344,6 +403,9 @@ For the daily billing GitHub Action:
 ```bash
 # .env
 APP_SECRET=your-secret-key-here
+
+# Optional: For custom distributions only
+# BYPASS_SHOPIFY_BILLING=true
 ```
 
 ## Testing
