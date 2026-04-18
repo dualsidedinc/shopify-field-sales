@@ -9,7 +9,7 @@
  */
 
 import { prisma } from "@field-sales/database";
-import { unauthenticated } from "../shopify.server";
+import { unauthenticated, sessionStorage } from "../shopify.server";
 import { toGid, fromGid } from "../lib/shopify-ids";
 import { syncCompanyDetails } from "./companySync.server";
 import { syncAllShopCatalogs } from "./catalog.server";
@@ -155,6 +155,64 @@ export async function syncShop(
 
     console.log(`[Sync] Starting sync for shop ${shop.shopifyDomain}`, { objects: objectsToSync });
 
+    // Check if session exists before attempting authentication
+    let sessions;
+    try {
+      sessions = await sessionStorage.findSessionsByShop(shop.shopifyDomain);
+      if (!sessions || sessions.length === 0) {
+        console.log(`[Sync] No session found for ${shop.shopifyDomain} - app may not be installed`);
+        return {
+          success: false,
+          duration: Date.now() - startTime,
+          results,
+          errors: [`No session found - app needs to be installed on ${shop.shopifyDomain}. The merchant must visit the app to complete OAuth.`],
+        };
+      }
+
+      // Log session details for debugging
+      const offlineSession = sessions.find(s => s.id.startsWith('offline_'));
+      if (offlineSession) {
+        const now = new Date();
+        const isExpired = offlineSession.expires && new Date(offlineSession.expires) < now;
+        const hasAccessToken = !!offlineSession.accessToken;
+        const tokenLength = offlineSession.accessToken?.length || 0;
+
+        console.log(`[Sync] Session for ${shop.shopifyDomain}:`, {
+          sessionId: offlineSession.id,
+          hasAccessToken,
+          tokenLength,
+          isExpired,
+          expires: offlineSession.expires?.toISOString() || 'never',
+          scope: offlineSession.scope?.substring(0, 50) + '...',
+        });
+
+        if (isExpired) {
+          return {
+            success: false,
+            duration: Date.now() - startTime,
+            results,
+            errors: [`Session expired on ${offlineSession.expires?.toISOString()}. The merchant needs to re-authorize the app by visiting the app in Shopify admin.`],
+          };
+        }
+
+        if (!hasAccessToken) {
+          return {
+            success: false,
+            duration: Date.now() - startTime,
+            results,
+            errors: [`Session exists but has no access token. The merchant needs to re-authorize the app.`],
+          };
+        }
+      } else {
+        console.log(`[Sync] No offline session found for ${shop.shopifyDomain}, only online sessions exist`);
+      }
+
+      console.log(`[Sync] Found ${sessions.length} session(s) for ${shop.shopifyDomain}`);
+    } catch (sessionError) {
+      console.error(`[Sync] Error checking session for ${shop.shopifyDomain}:`, sessionError);
+      // Continue - let the auth attempt provide more specific error
+    }
+
     // Get admin client for this shop
     let admin;
     try {
@@ -166,6 +224,10 @@ export async function syncShop(
         authErrorMsg = authError.message;
       } else if (authError instanceof Response) {
         authErrorMsg = `HTTP ${authError.status}: ${authError.statusText}`;
+        // Add guidance for common errors
+        if (authError.status === 500) {
+          authErrorMsg += `. This often means the app session is missing or invalid. The merchant needs to reinstall the app.`;
+        }
       }
       console.error(`[Sync] Failed to authenticate with Shopify for ${shop.shopifyDomain}:`, authErrorMsg);
       return {
