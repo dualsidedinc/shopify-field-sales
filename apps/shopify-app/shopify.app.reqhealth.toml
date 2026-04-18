@@ -1,8 +1,8 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "4e238850ee78ee25da4d7993386a7a32"
-name = "Field Sales Manager"
-application_url = "https://field-sales-admin.dualsidedapp.com"
+name = "Field Sales - ReQ Health"
+application_url = "https://field-sale-reqhealth.dualsidedapp.com"
 embedded = true
 
 [webhooks]
@@ -14,19 +14,19 @@ api_version = "2026-04"
   "company_locations/update",
   "company_locations/delete"
 ]
-  uri = "https://field-sales-admin.dualsidedapp.com/webhooks/company-locations"
+  uri = "https://field-sale-reqhealth.dualsidedapp.com/webhooks/company-locations"
 
   [[webhooks.subscriptions]]
   topics = [ "companies/create", "companies/delete", "companies/update" ]
-  uri = "https://field-sales-admin.dualsidedapp.com/webhooks/companies"
+  uri = "https://field-sale-reqhealth.dualsidedapp.com/webhooks/companies"
 
   [[webhooks.subscriptions]]
   topics = [ "app/scopes_update" ]
-  uri = "https://field-sales-admin.dualsidedapp.com/webhooks/app/scopes_update"
+  uri = "https://field-sale-reqhealth.dualsidedapp.com/webhooks/app/scopes_update"
 
   [[webhooks.subscriptions]]
   topics = [ "app/uninstalled" ]
-  uri = "https://field-sales-admin.dualsidedapp.com/webhooks/app/uninstalled"
+  uri = "https://field-sale-reqhealth.dualsidedapp.com/webhooks/app/uninstalled"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
@@ -35,4 +35,4 @@ optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://field-sales-admin.dualsidedapp.com/api/auth" ]
+redirect_urls = [ "https://field-sale-reqhealth.dualsidedapp.com/api/auth" ]

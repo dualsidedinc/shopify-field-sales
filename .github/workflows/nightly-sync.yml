@@ -29,6 +29,18 @@ jobs:
         run: |
           echo "Starting nightly sync at $(date -u)"
 
+          # Validate required secrets
+          if [ -z "$APP_URL" ]; then
+            echo "ERROR: SHOPIFY_APP_URL secret is not set"
+            exit 1
+          fi
+          if [ -z "$APP_SECRET" ]; then
+            echo "ERROR: APP_SECRET secret is not set"
+            exit 1
+          fi
+
+          echo "Calling: ${APP_URL}/api/cron/sync"
+
           # Build query params
           QUERY_PARAMS=""
           if [ -n "${{ github.event.inputs.objects }}" ]; then

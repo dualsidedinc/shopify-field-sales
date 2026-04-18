@@ -131,7 +131,7 @@ export async function syncShop(
   try {
     const shop = await prisma.shop.findUnique({
       where: { id: shopId },
-      select: { id: true, shopifyDomain: true, productInclusionTag: true },
+      select: { id: true, shopifyDomain: true, productInclusionTag: true, accessToken: true },
     });
 
     if (!shop) {
@@ -143,10 +143,38 @@ export async function syncShop(
       };
     }
 
+    if (!shop.accessToken) {
+      console.log(`[Sync] Shop ${shop.shopifyDomain} has no access token, skipping`);
+      return {
+        success: false,
+        duration: Date.now() - startTime,
+        results,
+        errors: ["Shop has no access token - app may not be installed"],
+      };
+    }
+
     console.log(`[Sync] Starting sync for shop ${shop.shopifyDomain}`, { objects: objectsToSync });
 
     // Get admin client for this shop
-    const { admin } = await unauthenticated.admin(shop.shopifyDomain);
+    let admin;
+    try {
+      const result = await unauthenticated.admin(shop.shopifyDomain);
+      admin = result.admin;
+    } catch (authError) {
+      let authErrorMsg = "Authentication failed";
+      if (authError instanceof Error) {
+        authErrorMsg = authError.message;
+      } else if (authError instanceof Response) {
+        authErrorMsg = `HTTP ${authError.status}: ${authError.statusText}`;
+      }
+      console.error(`[Sync] Failed to authenticate with Shopify for ${shop.shopifyDomain}:`, authErrorMsg);
+      return {
+        success: false,
+        duration: Date.now() - startTime,
+        results,
+        errors: [`Authentication failed: ${authErrorMsg}`],
+      };
+    }
 
     // Sync companies (includes contacts and locations)
     if (objectsToSync.includes("companies") || objectsToSync.includes("all")) {
@@ -205,11 +233,24 @@ export async function syncShop(
     };
   } catch (error) {
     console.error(`[Sync] Fatal error syncing shop ${shopId}:`, error);
+
+    // Extract useful error message
+    let errorMessage = "Unknown error";
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (error instanceof Response) {
+      errorMessage = `HTTP ${error.status}: ${error.statusText}`;
+    } else if (typeof error === "string") {
+      errorMessage = error;
+    } else {
+      errorMessage = String(error);
+    }
+
     return {
       success: false,
       duration: Date.now() - startTime,
       results,
-      errors: [`Fatal error: ${error}`],
+      errors: [`Fatal error: ${errorMessage}`],
     };
   }
 }
