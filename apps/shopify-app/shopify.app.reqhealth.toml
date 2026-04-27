@@ -2,37 +2,37 @@
 
 client_id = "4e238850ee78ee25da4d7993386a7a32"
 name = "Field Sales - ReQ Health"
-application_url = "https://field-sale-reqhealth.dualsidedapp.com"
+application_url = "https://field-sales-reqhealth.dualsidedapp.com"
 embedded = true
 
 [webhooks]
 api_version = "2026-04"
 
   [[webhooks.subscriptions]]
+  uri = "/webhooks/company-locations"
   topics = [
   "company_locations/create",
   "company_locations/update",
   "company_locations/delete"
 ]
-  uri = "https://field-sale-reqhealth.dualsidedapp.com/webhooks/company-locations"
 
   [[webhooks.subscriptions]]
-  topics = [ "companies/create", "companies/delete", "companies/update" ]
-  uri = "https://field-sale-reqhealth.dualsidedapp.com/webhooks/companies"
+  uri = "/webhooks/companies"
+  topics = [ "companies/create", "companies/update", "companies/delete" ]
 
   [[webhooks.subscriptions]]
+  uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
-  uri = "https://field-sale-reqhealth.dualsidedapp.com/webhooks/app/scopes_update"
 
   [[webhooks.subscriptions]]
+  uri = "/webhooks/app/uninstalled"
   topics = [ "app/uninstalled" ]
-  uri = "https://field-sale-reqhealth.dualsidedapp.com/webhooks/app/uninstalled"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_products,read_companies,read_customers,read_files,read_orders,write_companies,write_draft_orders,write_orders,write_payment_mandate,write_app_proxy"
+scopes = "read_companies,read_customers,read_files,read_orders,read_products,write_app_proxy,write_companies,write_draft_orders,write_orders,write_payment_mandate"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
-redirect_urls = [ "https://field-sale-reqhealth.dualsidedapp.com/api/auth" ]
+redirect_urls = [ "https://field-sales-reqhealth.dualsidedapp.com/api/auth" ]
