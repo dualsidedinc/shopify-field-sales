@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { Suspense, useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Search, Plus } from 'lucide-react';
@@ -36,7 +36,7 @@ interface OrderApiItem {
 
 const VALID_STATUS_FILTERS = ORDER_FILTER_KEYS;
 
-export default function OrdersPage() {
+function OrdersPageContent() {
   const searchParams = useSearchParams();
   const initialStatus = searchParams.get('status') as StatusFilter | null;
   const [searchQuery, setSearchQuery] = useState('');
@@ -208,5 +208,13 @@ export default function OrdersPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function OrdersPage() {
+  return (
+    <Suspense fallback={<div className="p-4 text-center text-gray-500">Loading...</div>}>
+      <OrdersPageContent />
+    </Suspense>
   );
 }
