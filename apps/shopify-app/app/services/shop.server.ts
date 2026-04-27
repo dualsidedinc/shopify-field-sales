@@ -64,6 +64,16 @@ export interface TopCompany {
   orderCount: number;
 }
 
+export interface DashboardMetrics {
+  accounts: { value: number; change: number; changePercent: number };
+  orders: { value: number; change: number; changePercent: number };
+  revenue: { value: number; change: number; changePercent: number };
+  revenuePerRep: { value: number; change: number; changePercent: number };
+  pendingOrders: number;
+  pendingRevenue: number;
+  activeReps: number;
+}
+
 export interface DashboardData {
   shopName: string;
   companiesCount: number;
@@ -72,8 +82,20 @@ export interface DashboardData {
     id: string;
     isActive: boolean;
   } | null;
+  metrics: DashboardMetrics;
   topSalesReps: TopSalesRep[];
   topCompanies: TopCompany[];
+}
+
+/**
+ * Calculate percentage change between two values.
+ * Returns 0 if previous value is 0 (avoid division by zero).
+ */
+function calculatePercentChange(current: number, previous: number): number {
+  if (previous === 0) {
+    return current > 0 ? 100 : 0;
+  }
+  return Math.round(((current - previous) / previous) * 100);
 }
 
 /**
@@ -98,31 +120,154 @@ export async function getDashboardData(request: Request): Promise<DashboardData>
   // Get companies count from Shopify
   const companiesCount = await getShopifyCompaniesCount(admin);
 
-  // Fetch leaderboards if we have a shop and date range
+  // Default metrics for new installations or when no data
+  const defaultMetrics: DashboardMetrics = {
+    accounts: { value: 0, change: 0, changePercent: 0 },
+    orders: { value: 0, change: 0, changePercent: 0 },
+    revenue: { value: 0, change: 0, changePercent: 0 },
+    revenuePerRep: { value: 0, change: 0, changePercent: 0 },
+    pendingOrders: 0,
+    pendingRevenue: 0,
+    activeReps: 0,
+  };
+
+  // Fetch leaderboards and metrics if we have a shop and date range
   let topSalesReps: TopSalesRep[] = [];
   let topCompanies: TopCompany[] = [];
+  let metrics = defaultMetrics;
 
   if (shop?.id && startDate && endDate) {
-    const dateFilter = {
-      placedAt: {
-        gte: new Date(startDate),
-        lte: new Date(endDate + "T23:59:59.999Z"),
-      },
+    const currentStart = new Date(startDate);
+    const currentEnd = new Date(endDate + "T23:59:59.999Z");
+
+    // Calculate previous period (same duration, immediately before)
+    const periodMs = currentEnd.getTime() - currentStart.getTime();
+    const previousStart = new Date(currentStart.getTime() - periodMs);
+    const previousEnd = new Date(currentStart.getTime() - 1);
+
+    const currentDateFilter = {
+      placedAt: { gte: currentStart, lte: currentEnd },
+    };
+    const previousDateFilter = {
+      placedAt: { gte: previousStart, lte: previousEnd },
     };
 
-    // Top 10 Sales Reps by Revenue (exclude DRAFT and CANCELLED orders)
-    const salesRepStats = await prisma.order.groupBy({
-      by: ["salesRepId"],
-      where: {
-        shopId: shop.id,
-        status: { in: ["AWAITING_REVIEW", "PENDING", "PAID"] },
-        ...dateFilter,
+    // Statuses for "placed" orders (not draft/cancelled)
+    const placedStatuses: ("AWAITING_REVIEW" | "PENDING" | "PAID")[] = ["AWAITING_REVIEW", "PENDING", "PAID"];
+
+    // Run all queries in parallel
+    const [
+      // Current period metrics
+      currentOrderCount,
+      currentRevenue,
+      // Previous period metrics
+      previousOrderCount,
+      previousRevenue,
+      // Pending orders
+      pendingOrdersData,
+      // Active accounts (companies with orders in period)
+      currentActiveAccounts,
+      previousActiveAccounts,
+      // Active sales reps
+      activeRepsCount,
+      // Top sales reps
+      salesRepStats,
+      // Top companies
+      companyStats,
+    ] = await Promise.all([
+      // Current period order count
+      prisma.order.count({
+        where: { shopId: shop.id, status: { in: placedStatuses }, ...currentDateFilter },
+      }),
+      // Current period revenue
+      prisma.order.aggregate({
+        where: { shopId: shop.id, status: { in: placedStatuses }, ...currentDateFilter },
+        _sum: { totalCents: true },
+      }),
+      // Previous period order count
+      prisma.order.count({
+        where: { shopId: shop.id, status: { in: placedStatuses }, ...previousDateFilter },
+      }),
+      // Previous period revenue
+      prisma.order.aggregate({
+        where: { shopId: shop.id, status: { in: placedStatuses }, ...previousDateFilter },
+        _sum: { totalCents: true },
+      }),
+      // Pending orders and revenue
+      prisma.order.aggregate({
+        where: { shopId: shop.id, status: "PENDING" },
+        _count: { _all: true },
+        _sum: { totalCents: true },
+      }),
+      // Current period active accounts
+      prisma.order.groupBy({
+        by: ["companyId"],
+        where: { shopId: shop.id, status: { in: placedStatuses }, ...currentDateFilter },
+      }),
+      // Previous period active accounts
+      prisma.order.groupBy({
+        by: ["companyId"],
+        where: { shopId: shop.id, status: { in: placedStatuses }, ...previousDateFilter },
+      }),
+      // Active sales reps count
+      prisma.salesRep.count({
+        where: { shopId: shop.id, isActive: true },
+      }),
+      // Top 10 Sales Reps by Revenue
+      prisma.order.groupBy({
+        by: ["salesRepId"],
+        where: { shopId: shop.id, status: { in: placedStatuses }, ...currentDateFilter },
+        _sum: { totalCents: true },
+        _count: { _all: true },
+        orderBy: { _sum: { totalCents: "desc" } },
+        take: 10,
+      }),
+      // Top 10 Companies by Revenue
+      prisma.order.groupBy({
+        by: ["companyId"],
+        where: { shopId: shop.id, status: { in: placedStatuses }, ...currentDateFilter },
+        _sum: { totalCents: true },
+        _count: { _all: true },
+        orderBy: { _sum: { totalCents: "desc" } },
+        take: 10,
+      }),
+    ]);
+
+    // Calculate metrics
+    const currentRevenueValue = currentRevenue._sum?.totalCents || 0;
+    const previousRevenueValue = previousRevenue._sum?.totalCents || 0;
+    const currentAccountCount = currentActiveAccounts.length;
+    const previousAccountCount = previousActiveAccounts.length;
+
+    // Revenue per rep (avoid division by zero)
+    const currentRevenuePerRep = activeRepsCount > 0 ? Math.round(currentRevenueValue / activeRepsCount) : 0;
+    const previousRevenuePerRep = activeRepsCount > 0 ? Math.round(previousRevenueValue / activeRepsCount) : 0;
+
+    metrics = {
+      accounts: {
+        value: currentAccountCount,
+        change: currentAccountCount - previousAccountCount,
+        changePercent: calculatePercentChange(currentAccountCount, previousAccountCount),
       },
-      _sum: { totalCents: true },
-      _count: { _all: true },
-      orderBy: { _sum: { totalCents: "desc" } },
-      take: 10,
-    });
+      orders: {
+        value: currentOrderCount,
+        change: currentOrderCount - previousOrderCount,
+        changePercent: calculatePercentChange(currentOrderCount, previousOrderCount),
+      },
+      revenue: {
+        value: currentRevenueValue,
+        change: currentRevenueValue - previousRevenueValue,
+        changePercent: calculatePercentChange(currentRevenueValue, previousRevenueValue),
+      },
+      revenuePerRep: {
+        value: currentRevenuePerRep,
+        change: currentRevenuePerRep - previousRevenuePerRep,
+        changePercent: calculatePercentChange(currentRevenuePerRep, previousRevenuePerRep),
+      },
+      pendingOrders: pendingOrdersData._count?._all || 0,
+      pendingRevenue: pendingOrdersData._sum?.totalCents || 0,
+      activeReps: activeRepsCount,
+    };
 
     // Get sales rep names
     const repIds = salesRepStats.map((s) => s.salesRepId);
@@ -136,22 +281,8 @@ export async function getDashboardData(request: Request): Promise<DashboardData>
       id: s.salesRepId,
       name: repMap.get(s.salesRepId) || "Unknown",
       revenueCents: s._sum?.totalCents || 0,
-      orderCount: s._count?._all || 0,
+      orderCount: (s._count && typeof s._count === "object" && "_all" in s._count ? s._count._all : 0) as number,
     }));
-
-    // Top 10 Companies by Revenue (exclude DRAFT and CANCELLED orders)
-    const companyStats = await prisma.order.groupBy({
-      by: ["companyId"],
-      where: {
-        shopId: shop.id,
-        status: { in: ["AWAITING_REVIEW", "PENDING", "PAID"] },
-        ...dateFilter,
-      },
-      _sum: { totalCents: true },
-      _count: { _all: true },
-      orderBy: { _sum: { totalCents: "desc" } },
-      take: 10,
-    });
 
     // Get company names
     const companyIds = companyStats.map((c) => c.companyId);
@@ -165,7 +296,7 @@ export async function getDashboardData(request: Request): Promise<DashboardData>
       id: c.companyId,
       name: companyMap.get(c.companyId) || "Unknown",
       revenueCents: c._sum?.totalCents || 0,
-      orderCount: c._count?._all || 0,
+      orderCount: (c._count && typeof c._count === "object" && "_all" in c._count ? c._count._all : 0) as number,
     }));
   }
 
@@ -174,6 +305,7 @@ export async function getDashboardData(request: Request): Promise<DashboardData>
     companiesCount,
     hasManagedCompanies: shop?.hasManagedCompanies || false,
     shop: shop ? { id: shop.id, isActive: shop.isActive } : null,
+    metrics,
     topSalesReps,
     topCompanies,
   };

@@ -1,7 +1,7 @@
 import { prisma } from "@field-sales/database";
 import type { OrderStatus, PaymentTerms, PromotionType, PromotionScope } from "@prisma/client";
 import { toGid, fromGid } from "../lib/shopify-ids";
-import { recordBilledOrder, getCurrentBillingPeriod, PLAN_CONFIGS } from "./billing.server";
+import { recordBilledOrder, getCurrentBillingPeriod, PLAN_CONFIGS, recordBillingEvent } from "./billing.server";
 import { buildOrderMetafields, ensureMetafieldSetupForShop, type OrderMetafieldData } from "./metafield.server";
 import {
   evaluatePromotions,
@@ -1589,15 +1589,17 @@ export async function completeDraftOrder(
     // Extract numeric ID from GID for storage
     const shopifyOrderId = fromGid(shopifyOrder.id);
 
-    // Update local order with Shopify order info
+    // The order is now PLACED in Shopify but payment status is Shopify's
+    // call. We leave the local status at PENDING and let the orders/paid
+    // webhook flip it to PAID once Shopify confirms payment settled. This
+    // keeps a single source of truth for "is this order actually paid?".
     await prisma.order.update({
       where: { id: orderId },
       data: {
         shopifyOrderId,
         shopifyOrderNumber: shopifyOrder.name,
-        status: paymentPending ? "PENDING" : "PAID",
+        status: "PENDING",
         placedAt: new Date(),
-        ...(paymentPending ? {} : { paidAt: new Date() }),
       },
     });
 
@@ -1850,7 +1852,31 @@ export async function submitOrderForPayment(
 
       const shopifyOrderId = fromGid(shopifyOrder.id);
 
-      // Now authorize and capture the payment using the vaulted card
+      // Persist the Shopify order ID FIRST, before initiating the charge.
+      // Two reasons:
+      //  1. The orders/paid webhook can fire as soon as Shopify settles the
+      //     transaction. If the webhook arrives before this row is updated,
+      //     its `findFirst({ shopifyOrderId })` lookup returns null and the
+      //     event is silently dropped. Storing first guarantees the lookup
+      //     succeeds.
+      //  2. If the DB write fails (Postgres hiccup, network issue), we
+      //     haven't charged the customer's card yet. Safer to fail with no
+      //     side effects than to charge for an order we can't track.
+      //
+      // We DO NOT mark the local order PAID here — Shopify owns payment
+      // state and the orders/paid webhook is the single source of truth.
+      await prisma.order.update({
+        where: { id: orderId },
+        data: {
+          status: "PENDING",
+          shopifyOrderId,
+          shopifyOrderNumber: shopifyOrder.name,
+          paymentMethodId,
+          placedAt: new Date(),
+        },
+      });
+
+      // Now authorize and capture the payment using the vaulted card.
       const paymentResult = await processOrderPayment(
         shopifyOrderId,
         paymentMethodId,
@@ -1859,33 +1885,11 @@ export async function submitOrderForPayment(
       );
 
       if (!paymentResult.success) {
-        // Order was created but payment failed - leave as pending
+        // Order is already in our DB at PENDING with shopifyOrderId attached;
+        // no further state change needed. Admin can retry the charge later.
         console.error("Payment capture failed:", paymentResult.error);
-        await prisma.order.update({
-          where: { id: orderId },
-          data: {
-            status: "PENDING",
-            shopifyOrderId,
-            shopifyOrderNumber: shopifyOrder.name,
-            paymentMethodId,
-            placedAt: new Date(),
-          },
-        });
         return { success: false, error: `Order created but payment failed: ${paymentResult.error}` };
       }
-
-      // Payment successful
-      await prisma.order.update({
-        where: { id: orderId },
-        data: {
-          status: "PAID",
-          shopifyOrderId,
-          shopifyOrderNumber: shopifyOrder.name,
-          paymentMethodId,
-          placedAt: new Date(),
-          paidAt: new Date(),
-        },
-      });
 
       return {
         success: true,
@@ -1941,7 +1945,21 @@ export async function submitOrderForPayment(
 
       const shopifyOrderId = fromGid(shopifyOrder.id);
 
-      // Authorize the payment (hold on the card, capture on fulfillment)
+      // Persist the Shopify order ID FIRST — same reasoning as the
+      // DUE_ON_ORDER branch above: prevents webhook race + avoids charging
+      // when the DB write fails.
+      await prisma.order.update({
+        where: { id: orderId },
+        data: {
+          status: "PENDING", // Stays PENDING until fulfillment + capture
+          shopifyOrderId,
+          shopifyOrderNumber: shopifyOrder.name,
+          paymentMethodId,
+          placedAt: new Date(),
+        },
+      });
+
+      // Authorize the payment (hold on the card, capture on fulfillment).
       const paymentResult = await processOrderPayment(
         shopifyOrderId,
         paymentMethodId,
@@ -1950,33 +1968,9 @@ export async function submitOrderForPayment(
       );
 
       if (!paymentResult.success) {
-        // Order was created but authorization failed
         console.error("Payment authorization failed:", paymentResult.error);
-        // Still save the order but note the authorization failed
-        await prisma.order.update({
-          where: { id: orderId },
-          data: {
-            status: "PENDING",
-            shopifyOrderId,
-            shopifyOrderNumber: shopifyOrder.name,
-            paymentMethodId,
-            placedAt: new Date(),
-          },
-        });
         return { success: false, error: `Order created but authorization failed: ${paymentResult.error}` };
       }
-
-      // Authorization successful
-      await prisma.order.update({
-        where: { id: orderId },
-        data: {
-          status: "PENDING", // Still pending until fulfillment and capture
-          shopifyOrderId,
-          shopifyOrderNumber: shopifyOrder.name,
-          paymentMethodId,
-          placedAt: new Date(),
-        },
-      });
 
       return {
         success: true,
@@ -2219,27 +2213,27 @@ export async function markOrderPaid(
   }
 
   try {
-    await prisma.order.update({
+    const paidAt = new Date();
+    const updated = await prisma.order.update({
       where: { id: orderId },
       data: {
         status: "PAID",
-        paidAt: new Date(),
+        paidAt,
       },
+      select: { totalCents: true },
     });
 
-    // Record for billing revenue share (only if shop has active billing)
-    const shop = await prisma.shop.findUnique({
-      where: { id: shopId },
-      select: { billingPlan: true, billingStatus: true },
+    // Append to the billing event ledger. The monthly cron aggregates these
+    // and the calendar-month boundary determines which cycle the event lands
+    // in. Idempotent — duplicate webhook deliveries won't double-bill.
+    await recordBillingEvent({
+      shopId,
+      orderId,
+      type: "PAID",
+      amountCents: updated.totalCents,
+      occurredAt: paidAt,
+      source: "markOrderPaid",
     });
-
-    if (shop?.billingPlan && (shop.billingStatus === "ACTIVE" || shop.billingStatus === "TRIAL")) {
-      const billingPeriod = await getCurrentBillingPeriod(shopId);
-      if (billingPeriod) {
-        const planConfig = PLAN_CONFIGS[shop.billingPlan];
-        await recordBilledOrder(orderId, billingPeriod.id, planConfig.revenueSharePercent);
-      }
-    }
 
     return { success: true };
   } catch (error) {
@@ -2305,24 +2299,27 @@ export async function processOrderWebhook(
     if (order) {
       // Order already linked, update status based on webhook topic
       if (topic === "ORDERS_PAID" && order.status !== "PAID") {
-        await prisma.order.update({
+        const paidAt = new Date();
+        const updated = await prisma.order.update({
           where: { id: order.id },
           data: {
             status: "PAID",
-            paidAt: new Date(),
+            paidAt,
           },
+          select: { totalCents: true },
         });
         console.log(`[Order Webhook] Marked order ${order.orderNumber} as PAID`);
 
-        // Record for billing revenue share
-        if (shop.billingPlan && (shop.billingStatus === "ACTIVE" || shop.billingStatus === "TRIAL")) {
-          const billingPeriod = await getCurrentBillingPeriod(shop.id);
-          if (billingPeriod) {
-            const planConfig = PLAN_CONFIGS[shop.billingPlan];
-            await recordBilledOrder(order.id, billingPeriod.id, planConfig.revenueSharePercent);
-            console.log(`[Order Webhook] Recorded billed order for revenue share`);
-          }
-        }
+        // Append to the billing event ledger — the monthly cron aggregates
+        // these into the calendar month containing `paidAt`.
+        await recordBillingEvent({
+          shopId: shop.id,
+          orderId: order.id,
+          type: "PAID",
+          amountCents: updated.totalCents,
+          occurredAt: paidAt,
+          source: `webhook:${topic}`,
+        });
       } else if (topic === "ORDERS_CANCELLED" && order.status !== "CANCELLED") {
         await prisma.order.update({
           where: { id: order.id },
@@ -2399,9 +2396,12 @@ export async function processDraftOrderWebhook(
       return { success: true };
     }
 
-    // Check if draft order was completed (converted to real order)
+    // Check if draft order was completed (converted to real order). When this
+    // fires, Shopify has placed the order — but payment hasn't necessarily
+    // settled yet. We mark the local order PENDING and let the orders/paid
+    // webhook flip it to PAID + write the BillingEvent. Shopify owns payment
+    // state; we only mirror it.
     if (payload.status === "completed" && payload.order_id) {
-      // Store numeric ID only (not full GID)
       const shopifyOrderId = String(payload.order_id);
 
       await prisma.order.update({
@@ -2409,23 +2409,12 @@ export async function processDraftOrderWebhook(
         data: {
           shopifyOrderId,
           shopifyOrderNumber: payload.name?.replace("D", "") || null, // Draft #D1 -> Order #1
-          status: "PAID", // Assuming payment was collected
+          status: "PENDING",
           placedAt: new Date(),
-          paidAt: new Date(),
         },
       });
 
-      console.log(`[Draft Order Webhook] Linked order ${order.orderNumber} to Shopify order ${shopifyOrderId}`);
-
-      // Record for billing revenue share
-      if (shop.billingPlan && (shop.billingStatus === "ACTIVE" || shop.billingStatus === "TRIAL")) {
-        const billingPeriod = await getCurrentBillingPeriod(shop.id);
-        if (billingPeriod) {
-          const planConfig = PLAN_CONFIGS[shop.billingPlan];
-          await recordBilledOrder(order.id, billingPeriod.id, planConfig.revenueSharePercent);
-          console.log(`[Draft Order Webhook] Recorded billed order for revenue share`);
-        }
-      }
+      console.log(`[Draft Order Webhook] Linked order ${order.orderNumber} to Shopify order ${shopifyOrderId} (status: PENDING — awaiting orders/paid)`);
     }
 
     return { success: true };
@@ -2457,12 +2446,25 @@ export async function markOrderRefunded(
   }
 
   try {
-    await prisma.order.update({
+    const refundedAt = new Date();
+    const updated = await prisma.order.update({
       where: { id: orderId },
       data: {
         status: "REFUNDED",
-        refundedAt: new Date(),
+        refundedAt,
       },
+      select: { totalCents: true },
+    });
+
+    // Append refund to the billing event ledger so the monthly cron credits
+    // it against the same period's paid revenue.
+    await recordBillingEvent({
+      shopId,
+      orderId,
+      type: "REFUNDED",
+      amountCents: updated.totalCents,
+      occurredAt: refundedAt,
+      source: "markOrderRefunded",
     });
 
     return { success: true };

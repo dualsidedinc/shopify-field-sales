@@ -1,19 +1,21 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/db/prisma';
 import { getAuthContext } from '@/lib/auth';
+import { proxyToShopifyApp } from '@/services/shopifyAppClient';
 import type { ApiError } from '@/types';
 
 interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
-// GET: List payment methods for a company (from Shopify vault, synced to our database)
+/**
+ * GET /api/companies/:id/payment-methods — read directly from DB.
+ */
 export async function GET(_request: Request, { params }: RouteParams) {
   try {
     const { id: companyId } = await params;
     const { shopId, repId, role } = await getAuthContext();
 
-    // Get company and verify access
     const company = await prisma.company.findFirst({
       where: {
         id: companyId,
@@ -36,22 +38,10 @@ export async function GET(_request: Request, { params }: RouteParams) {
       );
     }
 
-    // Get payment methods from database (synced from Shopify)
     const paymentMethods = await prisma.paymentMethod.findMany({
-      where: {
-        shopId,
-        companyId,
-        isActive: true,
-      },
+      where: { shopId, companyId, isActive: true },
       include: {
-        contact: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
-          },
-        },
+        contact: { select: { id: true, firstName: true, lastName: true, email: true } },
       },
       orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
     });
@@ -80,91 +70,17 @@ export async function GET(_request: Request, { params }: RouteParams) {
   }
 }
 
-// DELETE: Remove a payment method (soft delete - mark as inactive)
+/**
+ * DELETE /api/companies/:id/payment-methods?paymentMethodId=... — proxy.
+ */
 export async function DELETE(request: Request, { params }: RouteParams) {
-  try {
-    const { id: companyId } = await params;
-    const { shopId, repId, role } = await getAuthContext();
-    const { searchParams } = new URL(request.url);
-    const paymentMethodId = searchParams.get('paymentMethodId');
-
-    if (!paymentMethodId) {
-      return NextResponse.json<ApiError>(
-        { data: null, error: { code: 'VALIDATION_ERROR', message: 'Payment method ID required' } },
-        { status: 400 }
-      );
-    }
-
-    // Get company and verify access
-    const company = await prisma.company.findFirst({
-      where: {
-        id: companyId,
-        shopId,
-        ...(role === 'REP'
-          ? {
-              OR: [
-                { assignedRepId: repId },
-                { territory: { repTerritories: { some: { repId } } } },
-              ],
-            }
-          : {}),
-      },
-    });
-
-    if (!company) {
-      return NextResponse.json<ApiError>(
-        { data: null, error: { code: 'NOT_FOUND', message: 'Company not found' } },
-        { status: 404 }
-      );
-    }
-
-    // Find payment method
-    const paymentMethod = await prisma.paymentMethod.findFirst({
-      where: {
-        id: paymentMethodId,
-        shopId,
-        companyId,
-      },
-    });
-
-    if (!paymentMethod) {
-      return NextResponse.json<ApiError>(
-        { data: null, error: { code: 'NOT_FOUND', message: 'Payment method not found' } },
-        { status: 404 }
-      );
-    }
-
-    // Soft delete - mark as inactive (actual removal in Shopify should be done via Shopify admin)
-    await prisma.paymentMethod.update({
-      where: { id: paymentMethodId },
-      data: { isActive: false },
-    });
-
-    // If this was the default, set another as default
-    if (paymentMethod.isDefault) {
-      const nextMethod = await prisma.paymentMethod.findFirst({
-        where: {
-          shopId,
-          companyId,
-          isActive: true,
-        },
-        orderBy: { createdAt: 'desc' },
-      });
-
-      if (nextMethod) {
-        await prisma.paymentMethod.update({
-          where: { id: nextMethod.id },
-          data: { isDefault: true },
-        });
-      }
-    }
-
-    return NextResponse.json({ data: { deleted: true }, error: null });
-  } catch (error) {
-    console.error('Error deleting payment method:', error);
-    return NextResponse.json<ApiError>(
-      { data: null, error: { code: 'INTERNAL_ERROR', message: 'Failed to delete payment method' } },
-      { status: 500 }
-    );
-  }
+  const auth = await getAuthContext();
+  const { id } = await params;
+  const url = new URL(request.url);
+  const qs = url.search; // preserve ?paymentMethodId=...
+  return proxyToShopifyApp(
+    auth,
+    `/api/internal/companies/${id}/payment-methods${qs}`,
+    { method: 'DELETE' }
+  );
 }

@@ -76,9 +76,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   // For embedded apps, return URL must go through Shopify admin to maintain session
-  // Include the plan in the return URL so we can set it after approval
   const storeName = session.shop.replace(".myshopify.com", "");
-  const returnUrl = `https://admin.shopify.com/store/${storeName}/apps/field-sales-manager/app/billing/callback?plan=${plan}`;
+  const appHandle = process.env.SHOPIFY_APP_HANDLE || "field-sales-manager";
+  const returnUrl = `https://admin.shopify.com/store/${storeName}/apps/${appHandle}/app/billing/callback?plan=${plan}`;
   const isTest = process.env.NODE_ENV !== "production";
 
   const result = await createBillingSubscription(

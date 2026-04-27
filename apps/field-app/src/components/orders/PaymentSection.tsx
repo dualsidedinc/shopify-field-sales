@@ -51,11 +51,11 @@ export function PaymentSection({
 
   return (
     <div className="card">
-      <h2 className="font-semibold text-gray-900 mb-4">Payment</h2>
+      <h2 className="font-semibold text-gray-900 mb-2">Payment</h2>
 
-      <div className="space-y-4">
+      <div className="divide-y divide-gray-100">
         {/* Payment Terms */}
-        <div className="p-3 bg-gray-50 rounded-lg">
+        <div className="py-3 first:pt-1 space-y-1">
           <div className="flex justify-between items-center">
             <span className="text-sm text-gray-500">Payment Terms</span>
             <span className="font-medium text-gray-900">
@@ -63,7 +63,7 @@ export function PaymentSection({
             </span>
           </div>
           {dueDate && (
-            <div className="flex justify-between items-center mt-2">
+            <div className="flex justify-between items-center">
               <span className="text-sm text-gray-500">Due Date</span>
               <span className="text-sm text-gray-600">
                 {dueDate.toLocaleDateString('en-US', {
@@ -76,10 +76,10 @@ export function PaymentSection({
           )}
         </div>
 
-        {/* Invoice Info */}
-        {contact ? (
-          <div className="p-3 bg-blue-50 rounded-lg border border-blue-100">
-            <div className="flex items-start gap-2">
+        {/* Invoice Info — semantic info box, kept subtly tinted */}
+        <div className="py-3 last:pb-1">
+          {contact ? (
+            <div className="flex items-start gap-2 rounded-lg bg-blue-50 p-3">
               <svg
                 className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5"
                 fill="none"
@@ -100,14 +100,12 @@ export function PaymentSection({
                 </p>
               </div>
             </div>
-          </div>
-        ) : (
-          <div className="p-3 bg-gray-50 rounded-lg">
+          ) : (
             <p className="text-sm text-gray-500">
               Select a contact to send invoice
             </p>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

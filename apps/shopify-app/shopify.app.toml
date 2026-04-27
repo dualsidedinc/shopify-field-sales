@@ -2,8 +2,9 @@
 
 client_id = "f9fd79decc414b88daa949015eab027a"
 name = "Field Sales Manager DEV"
-application_url = "https://localhost"
+application_url = "https://occasion-mathematical-medline-mpegs.trycloudflare.com"
 embedded = true
+handle = "field-sales-manager-dev"
 
 [build]
 automatically_update_urls_on_dev = true
@@ -13,35 +14,62 @@ dev_store_url = "dualsided-dev.myshopify.com"
 api_version = "2026-04"
 
   [[webhooks.subscriptions]]
-  topics = [ "companies/create", "companies/delete", "companies/update" ]
-  uri = "/webhooks/companies"
+  topics = [
+  "company_locations/create",
+  "company_locations/update",
+  "company_locations/delete"
+]
+  uri = "/webhooks/company-locations"
 
   [[webhooks.subscriptions]]
   topics = [ "app/uninstalled" ]
   uri = "/webhooks/app/uninstalled"
 
   [[webhooks.subscriptions]]
-  topics = [
-  "company_locations/create",
-  "company_locations/delete",
-  "company_locations/update"
-]
-  uri = "/webhooks/company-locations"
-
-  [[webhooks.subscriptions]]
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
 
+  [[webhooks.subscriptions]]
+  topics = [ "companies/update", "companies/delete", "companies/create" ]
+  uri = "/webhooks/companies"
+
+  [[webhooks.subscriptions]]
+  topics = [ "orders/paid", "orders/cancelled", "orders/updated" ]
+  uri = "/webhooks/orders"
+
+  [[webhooks.subscriptions]]
+  topics = [ "refunds/create" ]
+  uri = "/webhooks/refunds"
+
+  [[webhooks.subscriptions]]
+  topics = [ "draft_orders/update" ]
+  uri = "/webhooks/draft-orders"
+
+  [[webhooks.subscriptions]]
+  topics = [ "company_contacts/create", "company_contacts/update", "company_contacts/delete" ]
+  uri = "/webhooks/company-contacts"
+
+  [[webhooks.subscriptions]]
+  topics = [
+  "customer_payment_methods/create",
+  "customer_payment_methods/update",
+  "customer_payment_methods/revoke",
+]
+  uri = "/webhooks/customer-payment-methods"
+
+  [[webhooks.subscriptions]]
+  topics = [ "products/create", "products/update", "products/delete" ]
+  uri = "/webhooks/products"
+
+  [[webhooks.subscriptions]]
+  topics = [ "app_subscriptions/update", "app_subscriptions/approaching_capped_amount" ]
+  uri = "/webhooks/billing"
+
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_products,read_companies,read_customers,read_files,read_orders,write_companies,write_draft_orders,write_orders,write_payment_mandate,write_app_proxy"
+scopes = "read_companies,read_customers,read_files,read_orders,read_products,write_app_proxy,write_companies,write_draft_orders,write_orders,write_payment_mandate"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [ ]
-
-[app_proxy]
-url = "/proxy"
-subpath = "fsm"
-prefix = "apps"

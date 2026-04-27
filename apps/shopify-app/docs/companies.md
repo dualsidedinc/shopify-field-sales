@@ -268,16 +268,29 @@ await updateCompanyRepAssignment(shopId, companyId, repId);
 
 ## Webhooks
 
-Company data is kept in sync via webhooks:
+Company data is kept in sync via webhooks. **All webhook routes enqueue
+to the [job queue](./queue.md)** — receive handlers acknowledge in <50ms
+and the worker dispatches to the registered handlers async with retries.
 
-| Topic | Trigger | Action |
+| Topic | Trigger | Action (in worker) |
 |-------|---------|--------|
-| `COMPANIES_CREATE` | Company created in Shopify | Import to database |
-| `COMPANIES_UPDATE` | Company modified | Update local record |
-| `COMPANIES_DELETE` | Company deleted | Deactivate local record |
-| `COMPANY_LOCATIONS_CREATE` | Location added | Import and align |
-| `COMPANY_LOCATIONS_UPDATE` | Location modified | Update and realign |
-| `COMPANY_LOCATIONS_DELETE` | Location removed | Deactivate |
+| `companies/create` | Company created in Shopify | `processCompanyWebhook` — import to DB |
+| `companies/update` | Company modified | `processCompanyWebhook` — update local record |
+| `companies/delete` | Company deleted | `processCompanyWebhook` — deactivate |
+| `company_locations/create` | Location added | `syncCompanyDetails` — full company sync (picks up payment terms via GraphQL) |
+| `company_locations/update` | Location modified | `syncCompanyDetails` — full company sync |
+| `company_locations/delete` | Location removed | `processCompanyLocationWebhook` — deactivate |
+| `company_contacts/create` | Contact added | `syncCompanyDetails` — full company sync |
+| `company_contacts/update` | Contact modified | `syncCompanyDetails` — full company sync |
+| `company_contacts/delete` | Contact removed | direct `companyContact.deleteMany` by `(companyId, shopifyContactId)` |
+| `customer_payment_methods/create` | Vaulted card added | `syncCustomerPaymentMethodsWebhook` |
+| `customer_payment_methods/update` | Vaulted card updated | same |
+| `customer_payment_methods/revoke` | Vaulted card revoked | same |
+
+Failed handler runs are retried 5 times with exponential backoff (the
+`WEBHOOK` kind profile in `services/queue/queue.server.ts`). Permanent
+failures are visible via `SELECT * FROM queue_jobs WHERE status = 'FAILED'`
+or the queue admin view.
 
 ## Payment Terms
 

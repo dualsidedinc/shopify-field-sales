@@ -14,6 +14,7 @@ Mobile-first web application for field sales representatives to:
 
 | Document | Description |
 |----------|-------------|
+| **[Architecture](../../../docs/architecture.md)** | **Cross-app responsibility split + internal API pattern — read first** |
 | [Orders](./orders.md) | Order lifecycle, OrderForm component, API |
 | [Companies](./companies.md) | Companies, contacts, locations |
 | [Products](./products.md) | Catalog, variants, availability |
@@ -64,14 +65,19 @@ Pages (app/(app)/)
 
 ### Data Flow
 ```
-Field App ←→ Database ←→ Shopify App ←→ Shopify
-           (shared)
+Field App ──proxy──▶ Shopify App ──GraphQL──▶ Shopify
+    │                     │
+    └────reads (DB)───────┴────reads+writes (DB)
+              ▼
+         Shared PostgreSQL
 ```
 
-- Field app does NOT interact with Shopify directly
-- Reads/writes to shared PostgreSQL database
-- Shopify app handles all Shopify API communication
+- Field app does **NOT** interact with Shopify directly
+- Reads come from the shared PostgreSQL DB (direct query)
+- **Mutations proxy to shopify-app** via `proxyToShopifyApp(auth, '/api/internal/...', { ... })`
+- Shopify app handles all Shopify API communication, owns the order state machine, runs the promotion engine
 - Products & companies synced by shopify-app webhooks
+- Full pattern: [`docs/architecture.md`](../../../docs/architecture.md)
 
 ### API Response Format
 All API endpoints return:
@@ -128,7 +134,9 @@ See [Components](./components.md) for the full framework guide. Quick checklist:
 2. Create form hook in `src/hooks/use[Feature]Form.ts`
 3. Create form sections in `src/components/[feature]/`
 4. Create form orchestrator in `src/components/[feature]/[Feature]Form.tsx`
-5. Create API endpoints in `src/app/api/[feature]/`
+5. Create API endpoints in `src/app/api/[feature]/`:
+   - **GET (read)**: direct Prisma query, filter by `shopId`
+   - **POST/PUT/DELETE (mutation)**: thin proxy via `proxyToShopifyApp` to `/api/internal/[feature]` on shopify-app — see [`docs/architecture.md`](../../../docs/architecture.md)
 6. Create pages in `src/app/(app)/[feature]/`
 7. Export from index files
 8. Update documentation

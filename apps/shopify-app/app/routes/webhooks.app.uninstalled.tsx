@@ -1,17 +1,36 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
+import { enqueueJob } from "../services/queue/enqueue.server";
 
+/**
+ * Hybrid: session cleanup runs INLINE (auth-critical — must happen before
+ * any subsequent request from this shop is rejected), and the business-side
+ * cleanup (cancel billing, etc.) is enqueued for async processing.
+ *
+ * Webhook can trigger multiple times after an app is uninstalled — both the
+ * inline `deleteMany` and the queued handler are idempotent so retries are
+ * safe.
+ */
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, session, topic } = await authenticate.webhook(request);
+  const { shop, session, topic, payload } = await authenticate.webhook(request);
 
-  console.log(`Received ${topic} webhook for ${shop}`);
-
-  // Webhook requests can trigger multiple times and after an app has already been uninstalled.
-  // If this webhook already ran, the session may have been deleted previously.
+  // 1. Inline: delete OAuth session(s) so further requests are rejected
+  //    immediately. Idempotent.
   if (session) {
     await db.session.deleteMany({ where: { shop } });
   }
 
-  return new Response();
+  // 2. Queue the business-side cleanup (cancel billing, etc.). The
+  //    `app/uninstalled` handler in services/queue/handlers/webhooks.server.ts
+  //    runs cancelBilling for the shop.
+  await enqueueJob({
+    kind: "WEBHOOK",
+    topic,
+    payload: { shopDomain: shop, topic, payload },
+    idempotencyKey: shop, // one cleanup job per shop is enough
+    source: `shopify:${topic}`,
+  });
+
+  return new Response(null, { status: 200 });
 };

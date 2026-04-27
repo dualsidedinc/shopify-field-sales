@@ -3,7 +3,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
-import { useOrderForm, type InitialOrderData, type OrderLineItem } from '@/hooks/useOrderForm';
+import { useOrderForm, isFreeLineItem, type InitialOrderData, type OrderLineItem } from '@/hooks/useOrderForm';
+import { getOrderStatusLabel } from '@/lib/orderStatus';
 import { usePromotions } from '@/hooks/usePromotions';
 import { SaveBar, useToast, useSaveBarContext } from '../ui';
 import { CompanySection } from './CompanySection';
@@ -42,6 +43,7 @@ export function OrderForm({
   // Initialize form with initial data
   const {
     formData,
+    setFormData,
     isDirty,
     resetForm,
     updateInitialRef,
@@ -57,6 +59,24 @@ export function OrderForm({
     setTax,
     updateTotals,
   } = useOrderForm(initialData);
+
+  // Apply a server response (from submit/approve/decline/addComment) to the
+  // local form. router.refresh() doesn't re-trigger the parent's useEffect
+  // refetch, so without this the status + timeline would stay stale and
+  // status-driven UI (like the Submit button) wouldn't update.
+  const applyServerOrderUpdate = useCallback(
+    (data: { status?: string; timelineEvents?: unknown[] } | null | undefined) => {
+      if (!data) return;
+      setFormData((prev) => ({
+        ...prev,
+        ...(data.status && { status: data.status as typeof prev.status }),
+        ...(data.timelineEvents && {
+          timelineEvents: data.timelineEvents as typeof prev.timelineEvents,
+        }),
+      }));
+    },
+    [setFormData]
+  );
 
   // Tax calculation state
   const [isCalculatingTax, setIsCalculatingTax] = useState(false);
@@ -86,13 +106,13 @@ export function OrderForm({
   // Re-evaluate promotions when line items change
   // Create a stable key based on line items to detect changes
   const lineItemsKey = formData.lineItems
-    .filter((item) => !item.isFreeItem)
+    .filter((item) => !isFreeLineItem(item))
     .map((item) => `${item.shopifyVariantId}:${item.quantity}`)
     .join(',');
 
   useEffect(() => {
     if (!promotionsLoading) {
-      const regularItems = formData.lineItems.filter((item) => !item.isFreeItem);
+      const regularItems = formData.lineItems.filter((item) => !isFreeLineItem(item));
       if (regularItems.length > 0) {
         const result = evaluateCart(formData.lineItems);
         updateTotals(
@@ -137,7 +157,7 @@ export function OrderForm({
 
   // Calculate tax when conditions change
   const calculateTax = useCallback(async () => {
-    const regularLineItems = formData.lineItems.filter((li) => !li.isFreeItem);
+    const regularLineItems = formData.lineItems.filter((li) => !isFreeLineItem(li));
     if (regularLineItems.length === 0) return;
     if (!formData.shippingLocation) return;
 
@@ -174,7 +194,7 @@ export function OrderForm({
   // Trigger tax calculation when shipping address or line items change (debounced)
   useEffect(() => {
     if (!formData.shippingLocation) return;
-    const regularLineItems = formData.lineItems.filter((li) => !li.isFreeItem);
+    const regularLineItems = formData.lineItems.filter((li) => !isFreeLineItem(li));
     if (regularLineItems.length === 0) return;
 
     // Clear any pending calculation
@@ -300,7 +320,7 @@ export function OrderForm({
       return;
     }
 
-    if (formData.lineItems.filter((item) => !item.isFreeItem).length === 0) {
+    if (formData.lineItems.filter((item) => !isFreeLineItem(item)).length === 0) {
       setError('Please add at least one product');
       return;
     }
@@ -329,25 +349,27 @@ export function OrderForm({
           onSuccess?.(data!.id);
           router.push(`/orders/${data!.id}`);
         } else {
-          const { error: apiError } = await api.client.orders.submit(orderId, comment);
+          const { data, error: apiError } = await api.client.orders.submit(orderId, comment);
 
           if (apiError) {
             setError(apiError.message || 'Failed to submit order');
             return;
           }
 
+          applyServerOrderUpdate(data);
           updateInitialRef();
           router.refresh();
         }
       } else {
         // Just submit
-        const { error: apiError } = await api.client.orders.submit(orderId!, comment);
+        const { data, error: apiError } = await api.client.orders.submit(orderId!, comment);
 
         if (apiError) {
           setError(apiError.message || 'Failed to submit order');
           return;
         }
 
+        applyServerOrderUpdate(data);
         router.refresh();
       }
     } catch (err) {
@@ -366,13 +388,14 @@ export function OrderForm({
     setError(null);
 
     try {
-      const { error: apiError } = await api.client.orders.approve(orderId, comment);
+      const { data, error: apiError } = await api.client.orders.approve(orderId, comment);
 
       if (apiError) {
         setError(apiError.message || 'Failed to approve order');
         return;
       }
 
+      applyServerOrderUpdate(data);
       router.refresh();
     } catch (err) {
       console.error('Error approving order:', err);
@@ -390,13 +413,14 @@ export function OrderForm({
     setError(null);
 
     try {
-      const { error: apiError } = await api.client.orders.decline(orderId, comment);
+      const { data, error: apiError } = await api.client.orders.decline(orderId, comment);
 
       if (apiError) {
         setError(apiError.message || 'Failed to decline order');
         return;
       }
 
+      applyServerOrderUpdate(data);
       router.refresh();
     } catch (err) {
       console.error('Error declining order:', err);
@@ -411,7 +435,8 @@ export function OrderForm({
     if (!orderId) return;
 
     try {
-      await api.client.orders.addComment(orderId, comment);
+      const { data } = await api.client.orders.addComment(orderId, comment);
+      applyServerOrderUpdate(data);
       router.refresh();
     } catch (err) {
       console.error('Error adding comment:', err);
@@ -462,17 +487,7 @@ export function OrderForm({
     }
   }
 
-  function getStatusLabel(status: string): string {
-    const labels: Record<string, string> = {
-      DRAFT: 'Draft',
-      AWAITING_REVIEW: 'Awaiting Review',
-      PENDING: 'Pending Payment',
-      PAID: 'Paid',
-      CANCELLED: 'Cancelled',
-      REFUNDED: 'Refunded',
-    };
-    return labels[status] || status;
-  }
+  const getStatusLabel = getOrderStatusLabel;
 
   // Build order payload for API
   function buildOrderPayload() {
@@ -490,7 +505,7 @@ export function OrderForm({
         imageUrl: item.imageUrl,
         quantity: item.quantity,
         unitPriceCents: item.unitPriceCents,
-        isFreeItem: item.isFreeItem || false,
+        isFreeItem: isFreeLineItem(item),
         promotionId: item.promotionId || null,
         promotionName: item.promotionName || null,
       })),
@@ -552,7 +567,7 @@ export function OrderForm({
               disabled={
                 isSubmitting ||
                 !formData.company ||
-                formData.lineItems.filter((item) => !item.isFreeItem).length === 0
+                formData.lineItems.filter((item) => !isFreeLineItem(item)).length === 0
               }
               className="btn-primary text-xs px-3 disabled:opacity-50 flex-shrink-0 whitespace-nowrap"
             >
@@ -638,7 +653,7 @@ export function OrderForm({
         {mode === 'edit' && (formData.status === 'AWAITING_REVIEW' || formData.status === 'DRAFT') && (
           <StatusActions
             status={formData.status}
-            hasLineItems={formData.lineItems.filter((item) => !item.isFreeItem).length > 0}
+            hasLineItems={formData.lineItems.filter((item) => !isFreeLineItem(item)).length > 0}
             isSubmitting={isSubmitting}
             shopifyOrderId={formData.shopifyOrderId}
             onApprove={canApprove ? handleApprove : undefined}

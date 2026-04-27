@@ -1,5 +1,5 @@
 import { prisma } from "@field-sales/database";
-import type { BillingPlan, BillingStatus } from "@prisma/client";
+import type { BillingPlan, BillingStatus, BillingEventType } from "@prisma/client";
 
 // ============================================
 // Environment Configuration
@@ -524,10 +524,11 @@ export async function activateBilling(
   }
 
   // Check if this is a new subscription or a plan change
-  const isNewSubscription = shop.billingStatus === "INACTIVE" || shop.billingStatus === "CANCELLED";
-  console.log("[activateBilling] isNewSubscription:", isNewSubscription);
-
+  // Also treat expired trials as new subscriptions (need to reset trial period)
   const now = new Date();
+  const trialExpired = shop.billingStatus === "TRIAL" && shop.trialEndsAt && now > shop.trialEndsAt;
+  const isNewSubscription = shop.billingStatus === "INACTIVE" || shop.billingStatus === "CANCELLED" || trialExpired;
+  console.log("[activateBilling] isNewSubscription:", isNewSubscription, "trialExpired:", trialExpired);
 
   // Only set trial for new subscriptions
   let trialEndsAt: Date | undefined;
@@ -535,19 +536,26 @@ export async function activateBilling(
   let periodStart: Date;
   let periodEnd: Date;
 
+  // Calendar-month billing: period always ends on the last day of the
+  // current calendar month. New installs get a partial first period from
+  // their install date to month-end; the monthly cron clamps charges to
+  // those days only.
+  const currentMonth = getCalendarMonthBoundaries(now);
+
   if (isNewSubscription) {
     trialEndsAt = new Date(now);
     trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
     billingStatus = "TRIAL";
-    periodStart = now;
-    periodEnd = new Date(now);
-    periodEnd.setDate(periodEnd.getDate() + 30);
+    periodStart = now; // install date — anchor for first-period proration
+    periodEnd = currentMonth.end;
   } else {
-    // For plan changes, keep existing status and period dates
+    // For plan changes during active trial/subscription, keep existing status and dates
+    // IMPORTANT: trialEndsAt is NOT set here - this prevents shops from extending
+    // their trial by changing plans. The existing trialEndsAt is preserved.
     // Shopify handles proration - we just update the plan
     billingStatus = shop.billingStatus === "TRIAL" ? "TRIAL" : "ACTIVE";
     periodStart = shop.currentPeriodStart || now;
-    periodEnd = shop.currentPeriodEnd || new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    periodEnd = shop.currentPeriodEnd || currentMonth.end;
   }
 
   console.log("[activateBilling] Will set billingStatus:", billingStatus, "trialEndsAt:", trialEndsAt);
@@ -679,9 +687,12 @@ export async function getCurrentBillingPeriod(shopId: string) {
  * Calculate usage charges for a shop
  */
 export async function calculateUsageCharges(shopId: string): Promise<UsageCharges> {
-  const period = await getCurrentBillingPeriod(shopId);
+  const shop = await prisma.shop.findUnique({
+    where: { id: shopId },
+    select: { billingPlan: true, currentPeriodStart: true },
+  });
 
-  if (!period) {
+  if (!shop?.billingPlan) {
     return {
       activeRepCount: 0,
       includedReps: 0,
@@ -694,38 +705,49 @@ export async function calculateUsageCharges(shopId: string): Promise<UsageCharge
     };
   }
 
-  // Count active reps
+  const planConfig = getPlanConfig(shop.billingPlan);
+
+  // Pending charges = events that have happened so far in the *current*
+  // calendar month and haven't been reported to Shopify yet.
+  const now = new Date();
+  const currentMonth = getCalendarMonthBoundaries(now);
+  const installAnchor = shop.currentPeriodStart;
+  const periodStart =
+    installAnchor && installAnchor > currentMonth.start ? installAnchor : currentMonth.start;
+  const daysInPeriod = daysBetween(periodStart, currentMonth.end);
+  const daysInFullMonth = daysBetween(currentMonth.start, currentMonth.end);
+
+  const events = await prisma.billingEvent.findMany({
+    where: {
+      shopId,
+      occurredAt: { gte: periodStart, lte: currentMonth.end },
+      reportedAt: null,
+    },
+    select: { type: true, amountCents: true },
+  });
+
+  const paidTotalCents = events
+    .filter((e) => e.type === "PAID")
+    .reduce((sum, e) => sum + e.amountCents, 0);
+  const refundedTotalCents = events
+    .filter((e) => e.type === "REFUNDED")
+    .reduce((sum, e) => sum + e.amountCents, 0);
+  const orderRevenueCents = Math.max(0, paidTotalCents - refundedTotalCents);
+  const revenueShareCents = Math.round(orderRevenueCents * (planConfig.revenueSharePercent / 100));
+
   const activeRepCount = await prisma.salesRep.count({
     where: { shopId, isActive: true },
   });
-
-  // Calculate extra rep charges
-  const extraRepCount = Math.max(0, activeRepCount - period.includedReps);
-  const repChargesCents = extraRepCount * period.perRepCents;
-
-  // Get unbilled paid orders for revenue share
-  const unbilledOrders = await prisma.order.findMany({
-    where: {
-      shopId,
-      status: "PAID",
-      paidAt: {
-        gte: period.periodStart,
-        lte: period.periodEnd,
-      },
-      billedOrder: null,
-    },
-    select: { id: true, totalCents: true },
-  });
-
-  const orderRevenueCents = unbilledOrders.reduce((sum, o) => sum + o.totalCents, 0);
-  const revenueShareCents = Math.round(orderRevenueCents * (period.revenueSharePercent / 100));
+  const extraRepCount = Math.max(0, activeRepCount - planConfig.includedReps);
+  const prorationFactor = daysInPeriod / daysInFullMonth;
+  const repChargesCents = Math.round(extraRepCount * planConfig.perRepCents * prorationFactor);
 
   return {
     activeRepCount,
-    includedReps: period.includedReps,
+    includedReps: planConfig.includedReps,
     extraRepCount,
     repChargesCents,
-    orderCount: unbilledOrders.length,
+    orderCount: events.filter((e) => e.type === "PAID").length,
     orderRevenueCents,
     revenueShareCents,
     totalChargesCents: repChargesCents + revenueShareCents,
@@ -817,96 +839,6 @@ export async function reportUsageCharge(
     console.error("[reportUsageCharge] Error:", error);
     return { success: false, error: "Failed to report usage charge" };
   }
-}
-
-/**
- * @deprecated Use reportDailyUsageForShop instead. This function was used for
- * end-of-month batch reporting but has been replaced by daily reporting.
- *
- * Report all usage charges for a billing period (end of month)
- * This calculates and reports:
- * 1. Extra rep charges based on active rep count
- * 2. Revenue share from all paid orders in the period
- */
-export async function reportPeriodUsage(
-  admin: { graphql: (query: string, options?: { variables: Record<string, unknown> }) => Promise<Response> },
-  shopId: string
-): Promise<{ success: boolean; repResult?: UsageReportResult; revenueResult?: UsageReportResult; error?: string }> {
-  const shop = await prisma.shop.findUnique({
-    where: { id: shopId },
-    select: {
-      usageLineItemId: true,
-      billingPlan: true,
-      currentPeriodStart: true,
-      currentPeriodEnd: true,
-    },
-  });
-
-  if (!shop?.usageLineItemId || !shop.billingPlan) {
-    return { success: false, error: "Shop not configured for billing" };
-  }
-
-  if (!shop.currentPeriodStart || !shop.currentPeriodEnd) {
-    return { success: false, error: "No active billing period" };
-  }
-
-  const planConfig = getPlanConfig(shop.billingPlan);
-  const periodKey = shop.currentPeriodStart.toISOString().slice(0, 10);
-
-  // Calculate extra rep charges
-  const activeRepCount = await prisma.salesRep.count({
-    where: { shopId, isActive: true },
-  });
-  const extraRepCount = Math.max(0, activeRepCount - planConfig.includedReps);
-  const repChargesCents = extraRepCount * planConfig.perRepCents;
-
-  // Calculate revenue share from paid orders in this period
-  const paidOrders = await prisma.order.findMany({
-    where: {
-      shopId,
-      status: "PAID",
-      paidAt: {
-        gte: shop.currentPeriodStart,
-        lte: shop.currentPeriodEnd,
-      },
-    },
-    select: { totalCents: true },
-  });
-  const totalRevenueCents = paidOrders.reduce((sum, o) => sum + o.totalCents, 0);
-  const revenueShareCents = Math.round(totalRevenueCents * (planConfig.revenueSharePercent / 100));
-
-  console.log("[reportPeriodUsage] Period:", periodKey);
-  console.log("[reportPeriodUsage] Active reps:", activeRepCount, "Extra:", extraRepCount, "Charge:", repChargesCents);
-  console.log("[reportPeriodUsage] Orders:", paidOrders.length, "Revenue:", totalRevenueCents, "Share:", revenueShareCents);
-
-  // Report extra rep charges
-  let repResult: UsageReportResult = { success: true };
-  if (repChargesCents > 0) {
-    const repDescription = `Extra sales reps (${extraRepCount} × $${(planConfig.perRepCents / 100).toFixed(2)})`;
-    repResult = await reportUsageCharge(
-      admin,
-      shop.usageLineItemId,
-      repChargesCents,
-      repDescription,
-      `rep-charges-${shopId}-${periodKey}`
-    );
-  }
-
-  // Report revenue share
-  let revenueResult: UsageReportResult = { success: true };
-  if (revenueShareCents > 0) {
-    const revenueDescription = `Revenue share (${planConfig.revenueSharePercent}% of $${(totalRevenueCents / 100).toFixed(2)})`;
-    revenueResult = await reportUsageCharge(
-      admin,
-      shop.usageLineItemId,
-      revenueShareCents,
-      revenueDescription,
-      `revenue-share-${shopId}-${periodKey}`
-    );
-  }
-
-  const success = repResult.success && revenueResult.success;
-  return { success, repResult, revenueResult };
 }
 
 /**
@@ -1019,273 +951,6 @@ export async function getBillingDashboardData(shopId: string) {
   };
 }
 
-// ============================================
-// Daily Usage Reporting (Batch)
-// ============================================
-
-export interface DailyUsageResult {
-  shopId: string;
-  shopDomain: string;
-  revenueShare: {
-    paidOrderCount: number;
-    refundedOrderCount: number;
-    netRevenueCents: number;
-    revenueShareCents: number;
-    reported: boolean;
-    usageRecordId?: string;
-    error?: string;
-  };
-  extraReps: {
-    activeCount: number;
-    includedCount: number;
-    previouslyCharged: number;
-    newCharges: number;
-    chargeCents: number;
-    reported: boolean;
-    usageRecordId?: string;
-    error?: string;
-  };
-}
-
-/**
- * Report daily usage for a single shop
- * Calculates: (Orders PAID) - (Orders REFUNDED) for net revenue share
- */
-export async function reportDailyUsageForShop(
-  shopId: string,
-  admin: { graphql: (query: string, options?: { variables: Record<string, unknown> }) => Promise<Response> }
-): Promise<DailyUsageResult | null> {
-  const bypassBilling = shouldBypassShopifyBilling();
-
-  const shop = await prisma.shop.findUnique({
-    where: { id: shopId },
-    select: {
-      id: true,
-      shopifyDomain: true,
-      billingPlan: true,
-      billingStatus: true,
-      usageLineItemId: true,
-    },
-  });
-
-  if (!shop || !shop.billingPlan) {
-    console.log(`[DailyUsage] Shop ${shopId} not configured for billing`);
-    return null;
-  }
-
-  // For bypassed instances, we don't need usageLineItemId - we just track locally
-  if (!bypassBilling && !shop.usageLineItemId) {
-    console.log(`[DailyUsage] Shop ${shopId} missing usageLineItemId`);
-    return null;
-  }
-
-  // Skip if not active or in trial (unless bypassed)
-  if (!bypassBilling && shop.billingStatus !== "ACTIVE" && shop.billingStatus !== "TRIAL") {
-    console.log(`[DailyUsage] Shop ${shopId} billing status is ${shop.billingStatus}, skipping`);
-    return null;
-  }
-
-  const planConfig = getPlanConfig(shop.billingPlan);
-  const today = new Date().toISOString().slice(0, 10);
-
-  const result: DailyUsageResult = {
-    shopId: shop.id,
-    shopDomain: shop.shopifyDomain,
-    revenueShare: {
-      paidOrderCount: 0,
-      refundedOrderCount: 0,
-      netRevenueCents: 0,
-      revenueShareCents: 0,
-      reported: false,
-    },
-    extraReps: {
-      activeCount: 0,
-      includedCount: planConfig.includedReps,
-      previouslyCharged: 0,
-      newCharges: 0,
-      chargeCents: 0,
-      reported: false,
-    },
-  };
-
-  // ---- Revenue Share Calculation ----
-  // Find orders PAID but not yet reported
-  const paidOrders = await prisma.order.findMany({
-    where: {
-      shopId,
-      status: "PAID",
-      paidAt: { not: null },
-      revenueShareReportedAt: null,
-    },
-    select: { id: true, totalCents: true },
-  });
-
-  // Find orders REFUNDED but not yet reported
-  const refundedOrders = await prisma.order.findMany({
-    where: {
-      shopId,
-      status: "REFUNDED",
-      refundedAt: { not: null },
-      revenueShareReportedAt: null,
-    },
-    select: { id: true, totalCents: true },
-  });
-
-  const paidTotal = paidOrders.reduce((sum, o) => sum + o.totalCents, 0);
-  const refundedTotal = refundedOrders.reduce((sum, o) => sum + o.totalCents, 0);
-  const netRevenueCents = paidTotal - refundedTotal;
-  const revenueShareCents = Math.max(0, Math.round(netRevenueCents * (planConfig.revenueSharePercent / 100)));
-
-  result.revenueShare.paidOrderCount = paidOrders.length;
-  result.revenueShare.refundedOrderCount = refundedOrders.length;
-  result.revenueShare.netRevenueCents = netRevenueCents;
-  result.revenueShare.revenueShareCents = revenueShareCents;
-
-  // Report revenue share if there's a positive amount
-  if (revenueShareCents > 0) {
-    const description = `Revenue share (${planConfig.revenueSharePercent}% of $${(netRevenueCents / 100).toFixed(2)} net revenue)`;
-    const idempotencyKey = `revenue-${shopId}-${today}`;
-
-    // Skip Shopify API call if bypassed, but still track locally
-    if (bypassBilling) {
-      console.log(`[DailyUsage] Shop ${shop.shopifyDomain} bypasses Shopify billing - logging revenue share locally: $${(revenueShareCents / 100).toFixed(2)}`);
-      result.revenueShare.reported = true;
-
-      // Mark all orders as reported (locally tracked)
-      const allOrderIds = [...paidOrders, ...refundedOrders].map(o => o.id);
-      await prisma.order.updateMany({
-        where: { id: { in: allOrderIds } },
-        data: {
-          revenueShareReportedAt: new Date(),
-          revenueShareUsageRecordId: `local-${idempotencyKey}`,
-        },
-      });
-    } else {
-      const usageResult = await reportUsageCharge(
-        admin,
-        shop.usageLineItemId!,
-        revenueShareCents,
-        description,
-        idempotencyKey
-      );
-
-      result.revenueShare.reported = usageResult.success;
-      result.revenueShare.usageRecordId = usageResult.usageRecordId;
-      result.revenueShare.error = usageResult.error;
-
-      if (usageResult.success) {
-        // Mark all orders as reported
-        const allOrderIds = [...paidOrders, ...refundedOrders].map(o => o.id);
-        await prisma.order.updateMany({
-          where: { id: { in: allOrderIds } },
-          data: {
-            revenueShareReportedAt: new Date(),
-            revenueShareUsageRecordId: usageResult.usageRecordId,
-          },
-        });
-      }
-    }
-  } else {
-    // No revenue share to report, but still mark orders as processed
-    const allOrderIds = [...paidOrders, ...refundedOrders].map(o => o.id);
-    if (allOrderIds.length > 0) {
-      await prisma.order.updateMany({
-        where: { id: { in: allOrderIds } },
-        data: { revenueShareReportedAt: new Date() },
-      });
-    }
-    result.revenueShare.reported = true; // Nothing to report is success
-  }
-
-  // ---- Extra Rep Charges (Prorated) ----
-  // Get current billing period
-  const billingPeriod = await prisma.billingPeriod.findFirst({
-    where: { shopId, status: "open" },
-    select: { id: true, extraRepsCharged: true, perRepCents: true, periodEnd: true },
-  });
-
-  if (billingPeriod) {
-    const activeRepCount = await prisma.salesRep.count({
-      where: { shopId, isActive: true },
-    });
-
-    const extraRepsNeeded = Math.max(0, activeRepCount - planConfig.includedReps);
-    const extraRepsToCharge = Math.max(0, extraRepsNeeded - billingPeriod.extraRepsCharged);
-
-    result.extraReps.activeCount = activeRepCount;
-    result.extraReps.previouslyCharged = billingPeriod.extraRepsCharged;
-    result.extraReps.newCharges = extraRepsToCharge;
-
-    if (extraRepsToCharge > 0) {
-      // Calculate prorated charge based on days remaining in period
-      const now = new Date();
-      const periodEnd = new Date(billingPeriod.periodEnd);
-      const msPerDay = 24 * 60 * 60 * 1000;
-      const daysRemaining = Math.max(1, Math.ceil((periodEnd.getTime() - now.getTime()) / msPerDay));
-      const prorationFactor = Math.min(1, daysRemaining / 30); // Cap at 1.0
-
-      const fullChargeCents = extraRepsToCharge * billingPeriod.perRepCents;
-      const proratedChargeCents = Math.round(fullChargeCents * prorationFactor);
-      result.extraReps.chargeCents = proratedChargeCents;
-
-      const perRepProrated = Math.round(billingPeriod.perRepCents * prorationFactor);
-      const description = `Extra sales reps (${extraRepsToCharge} × $${(perRepProrated / 100).toFixed(2)} prorated for ${daysRemaining} days)`;
-      const idempotencyKey = `reps-${shopId}-${today}-${activeRepCount}`;
-
-      // Skip Shopify API call if bypassed, but still track locally
-      if (bypassBilling) {
-        console.log(`[DailyUsage] Shop ${shop.shopifyDomain} bypasses Shopify billing - logging extra reps locally: ${extraRepsToCharge} reps, $${(proratedChargeCents / 100).toFixed(2)}`);
-        result.extraReps.reported = true;
-
-        // Update billing period with new charged count (locally tracked)
-        await prisma.billingPeriod.update({
-          where: { id: billingPeriod.id },
-          data: {
-            extraRepsCharged: billingPeriod.extraRepsCharged + extraRepsToCharge,
-            activeRepCount,
-            extraRepCount: extraRepsNeeded,
-            repChargesCents: { increment: proratedChargeCents },
-          },
-        });
-      } else {
-        const usageResult = await reportUsageCharge(
-          admin,
-          shop.usageLineItemId!,
-          proratedChargeCents,
-          description,
-          idempotencyKey
-        );
-
-        result.extraReps.reported = usageResult.success;
-        result.extraReps.usageRecordId = usageResult.usageRecordId;
-        result.extraReps.error = usageResult.error;
-
-        if (usageResult.success) {
-          // Update billing period with new charged count
-          await prisma.billingPeriod.update({
-            where: { id: billingPeriod.id },
-            data: {
-              extraRepsCharged: billingPeriod.extraRepsCharged + extraRepsToCharge,
-              activeRepCount,
-              extraRepCount: extraRepsNeeded,
-              repChargesCents: { increment: proratedChargeCents },
-            },
-          });
-        }
-      }
-    } else {
-      result.extraReps.reported = true; // Nothing to report is success
-    }
-  }
-
-  console.log(`[DailyUsage] Shop ${shop.shopifyDomain}:`, {
-    revenueShare: `${result.revenueShare.paidOrderCount} paid - ${result.revenueShare.refundedOrderCount} refunded = $${(result.revenueShare.netRevenueCents / 100).toFixed(2)} net → $${(result.revenueShare.revenueShareCents / 100).toFixed(2)} share`,
-    extraReps: `${result.extraReps.activeCount} active, ${result.extraReps.newCharges} new charges`,
-  });
-
-  return result;
-}
-
 /**
  * Get all shops that need daily usage reporting
  */
@@ -1309,4 +974,605 @@ export async function getShopsForDailyUsageReporting(): Promise<Array<{ id: stri
       shopifyDomain: true,
     },
   });
+}
+
+// ============================================
+// Calendar-month billing model
+// ============================================
+
+/**
+ * Returns the inclusive [start, end] of the calendar month containing `date`,
+ * with end pinned to the last millisecond of the month.
+ */
+export function getCalendarMonthBoundaries(date: Date): { start: Date; end: Date } {
+  const start = new Date(date.getFullYear(), date.getMonth(), 1, 0, 0, 0, 0);
+  const end = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59, 999);
+  return { start, end };
+}
+
+/**
+ * Returns the calendar month BEFORE the one containing `date`.
+ */
+export function getPreviousCalendarMonth(date: Date): { start: Date; end: Date } {
+  const start = new Date(date.getFullYear(), date.getMonth() - 1, 1, 0, 0, 0, 0);
+  const end = new Date(date.getFullYear(), date.getMonth(), 0, 23, 59, 59, 999);
+  return { start, end };
+}
+
+/**
+ * Number of full calendar days in a date range (rounded up).
+ */
+export function daysBetween(start: Date, end: Date): number {
+  const ms = end.getTime() - start.getTime();
+  return Math.max(1, Math.ceil(ms / (24 * 60 * 60 * 1000)));
+}
+
+// ============================================
+// Billing event ledger
+// ============================================
+
+interface RecordBillingEventInput {
+  shopId: string;
+  orderId: string | null;
+  type: BillingEventType;
+  amountCents: number;
+  occurredAt: Date;
+  source: string; // webhook topic or "manual" / "reconciliation"
+}
+
+/**
+ * Idempotent insert of a single billing event. Safe to call from webhook
+ * handlers — duplicate (shopId, orderId, type, occurredAt) is ignored.
+ *
+ * When a NEW event is created and `orderId` is set, the corresponding
+ * Order.paidAmountCents / refundedAmountCents column is atomically
+ * incremented so the Order record carries a denormalized running total.
+ * Idempotent skips do not increment.
+ */
+export async function recordBillingEvent(input: RecordBillingEventInput) {
+  if (input.amountCents < 0) {
+    throw new Error("BillingEvent.amountCents must be non-negative; type drives sign");
+  }
+
+  // Look up by natural key first. orderId can be null for manual adjustments;
+  // Prisma's unique index treats nulls as distinct, so adjustments always
+  // create new rows.
+  const existing = await prisma.billingEvent.findFirst({
+    where: {
+      shopId: input.shopId,
+      orderId: input.orderId,
+      type: input.type,
+      occurredAt: input.occurredAt,
+    },
+  });
+
+  if (existing) return existing;
+
+  // Create the event + bump the Order's denormalized total in one transaction.
+  // ADJUSTMENT events with no orderId don't touch any Order.
+  const orderUpdate =
+    input.orderId && (input.type === "PAID" || input.type === "REFUNDED")
+      ? prisma.order.update({
+          where: { id: input.orderId },
+          data:
+            input.type === "PAID"
+              ? { paidAmountCents: { increment: input.amountCents } }
+              : { refundedAmountCents: { increment: input.amountCents } },
+        })
+      : null;
+
+  const createEvent = prisma.billingEvent.create({
+    data: {
+      shopId: input.shopId,
+      orderId: input.orderId,
+      type: input.type,
+      amountCents: input.amountCents,
+      occurredAt: input.occurredAt,
+      source: input.source,
+    },
+  });
+
+  const [event] = orderUpdate
+    ? await prisma.$transaction([createEvent, orderUpdate])
+    : [await createEvent];
+
+  return event;
+}
+
+// ============================================
+// Reconciliation
+// ============================================
+
+export interface ReconciliationResult {
+  paidEventsAdded: number;
+  refundedEventsAdded: number;
+  totalChecked: number;
+}
+
+/**
+ * Diff `Order` rows against `BillingEvent` rows for a period and create any
+ * missing events. Webhook delivery isn't 100% reliable — this catches gaps
+ * before billing closes the period.
+ *
+ * - For PAID: any Order with `paidAt` in window but no PAID event → create one.
+ * - For REFUNDED: any Order with `refundedAt` in window but no REFUNDED event → create one.
+ *
+ * Safe to run repeatedly; `recordBillingEvent` is idempotent.
+ */
+export async function reconcileEventsForPeriod(
+  shopId: string,
+  periodStart: Date,
+  periodEnd: Date
+): Promise<ReconciliationResult> {
+  const [paidOrders, refundedOrders] = await Promise.all([
+    prisma.order.findMany({
+      where: {
+        shopId,
+        status: "PAID",
+        paidAt: { gte: periodStart, lte: periodEnd },
+      },
+      select: { id: true, totalCents: true, paidAt: true },
+    }),
+    prisma.order.findMany({
+      where: {
+        shopId,
+        status: "REFUNDED",
+        refundedAt: { gte: periodStart, lte: periodEnd },
+      },
+      select: { id: true, totalCents: true, refundedAt: true },
+    }),
+  ]);
+
+  let paidEventsAdded = 0;
+  let refundedEventsAdded = 0;
+
+  for (const o of paidOrders) {
+    if (!o.paidAt) continue;
+    const existing = await prisma.billingEvent.findFirst({
+      where: { shopId, orderId: o.id, type: "PAID" },
+      select: { id: true },
+    });
+    if (!existing) {
+      await recordBillingEvent({
+        shopId,
+        orderId: o.id,
+        type: "PAID",
+        amountCents: o.totalCents,
+        occurredAt: o.paidAt,
+        source: "reconciliation",
+      });
+      paidEventsAdded++;
+    }
+  }
+
+  for (const o of refundedOrders) {
+    if (!o.refundedAt) continue;
+    const existing = await prisma.billingEvent.findFirst({
+      where: { shopId, orderId: o.id, type: "REFUNDED" },
+      select: { id: true },
+    });
+    if (!existing) {
+      await recordBillingEvent({
+        shopId,
+        orderId: o.id,
+        type: "REFUNDED",
+        amountCents: o.totalCents,
+        occurredAt: o.refundedAt,
+        source: "reconciliation",
+      });
+      refundedEventsAdded++;
+    }
+  }
+
+  return {
+    paidEventsAdded,
+    refundedEventsAdded,
+    totalChecked: paidOrders.length + refundedOrders.length,
+  };
+}
+
+// ============================================
+// Monthly billing report
+// ============================================
+
+export interface MonthlyUsageResult {
+  shopId: string;
+  shopDomain: string;
+  period: { start: Date; end: Date; daysInPeriod: number; daysInFullMonth: number };
+  reconciliation: ReconciliationResult;
+  revenueShare: {
+    paidEventCount: number;
+    refundedEventCount: number;
+    paidTotalCents: number;
+    refundedTotalCents: number;
+    netRevenueCents: number;
+    revenueShareCents: number;
+    reported: boolean;
+    usageRecordId?: string;
+    error?: string;
+  };
+  extraReps: {
+    activeCount: number;
+    includedCount: number;
+    extraCount: number;
+    proratedChargeCents: number;
+    reported: boolean;
+    usageRecordId?: string;
+    error?: string;
+  };
+  billingPeriodId?: string;
+}
+
+/**
+ * Run a calendar-month billing close for a shop. Designed to be called on
+ * the 1st of each month for the previous month's events.
+ *
+ * Flow:
+ *   1. Determine the period: previous calendar month, clamped to install
+ *      date for first-period new installs.
+ *   2. Reconcile: add any missing BillingEvent rows from Order paidAt/refundedAt.
+ *   3. Aggregate net revenue from BillingEvent rows in the window.
+ *   4. Calculate prorated extra-rep charges.
+ *   5. Report to Shopify (or skip if BYPASS_SHOPIFY_BILLING).
+ *   6. Tag every event with the billingPeriodId + usageRecordId for audit.
+ *   7. Close the period; open the next one.
+ */
+export async function reportMonthlyUsageForShop(
+  shopId: string,
+  admin: { graphql: (query: string, options?: { variables: Record<string, unknown> }) => Promise<Response> },
+  /** Override the "now" used to compute the previous month — for testing. */
+  now: Date = new Date()
+): Promise<MonthlyUsageResult | null> {
+  const bypassBilling = shouldBypassShopifyBilling();
+
+  const shop = await prisma.shop.findUnique({
+    where: { id: shopId },
+    select: {
+      id: true,
+      shopifyDomain: true,
+      billingPlan: true,
+      billingStatus: true,
+      usageLineItemId: true,
+      currentPeriodStart: true,
+    },
+  });
+
+  if (!shop || !shop.billingPlan) {
+    console.log(`[MonthlyBilling] Shop ${shopId} not configured for billing`);
+    return null;
+  }
+
+  if (!bypassBilling && !shop.usageLineItemId) {
+    console.log(`[MonthlyBilling] Shop ${shopId} missing usageLineItemId`);
+    return null;
+  }
+
+  if (!bypassBilling && shop.billingStatus !== "ACTIVE" && shop.billingStatus !== "TRIAL") {
+    console.log(`[MonthlyBilling] Shop ${shopId} billing status is ${shop.billingStatus}, skipping`);
+    return null;
+  }
+
+  const planConfig = getPlanConfig(shop.billingPlan);
+
+  // Period = previous calendar month, clamped to install/activation date.
+  // For new installs whose first calendar month begins partway through, the
+  // install anchor is `currentPeriodStart` (set during activateBilling) so
+  // we don't bill them for days before they had access.
+  const fullMonth = getPreviousCalendarMonth(now);
+  const installAnchor = shop.currentPeriodStart;
+  const periodStart =
+    installAnchor && installAnchor > fullMonth.start ? installAnchor : fullMonth.start;
+  const periodEnd = fullMonth.end;
+  const daysInPeriod = daysBetween(periodStart, periodEnd);
+  const daysInFullMonth = daysBetween(fullMonth.start, fullMonth.end);
+
+  // Skip if period start is after period end (install happened after the
+  // period being processed — nothing to do).
+  if (periodStart > periodEnd) {
+    console.log(`[MonthlyBilling] Shop ${shopId} install ${installAnchor?.toISOString()} after period end ${periodEnd.toISOString()}`);
+    return null;
+  }
+
+  // Step 1: reconcile missing events from Order rows.
+  const reconciliation = await reconcileEventsForPeriod(shopId, periodStart, periodEnd);
+  if (reconciliation.paidEventsAdded > 0 || reconciliation.refundedEventsAdded > 0) {
+    console.log(
+      `[MonthlyBilling] Shop ${shop.shopifyDomain} reconciliation added ${reconciliation.paidEventsAdded} paid, ${reconciliation.refundedEventsAdded} refunded events`
+    );
+  }
+
+  // Step 2: aggregate events in window that haven't been reported yet.
+  const events = await prisma.billingEvent.findMany({
+    where: {
+      shopId,
+      occurredAt: { gte: periodStart, lte: periodEnd },
+      reportedAt: null,
+    },
+    select: { id: true, type: true, amountCents: true },
+  });
+
+  const paidEvents = events.filter((e) => e.type === "PAID");
+  const refundedEvents = events.filter((e) => e.type === "REFUNDED");
+  const paidTotalCents = paidEvents.reduce((sum, e) => sum + e.amountCents, 0);
+  const refundedTotalCents = refundedEvents.reduce((sum, e) => sum + e.amountCents, 0);
+  const netRevenueCents = Math.max(0, paidTotalCents - refundedTotalCents);
+  const revenueShareCents = Math.round(netRevenueCents * (planConfig.revenueSharePercent / 100));
+
+  // Step 3: prorated extra rep charges.
+  const activeRepCount = await prisma.salesRep.count({
+    where: { shopId, isActive: true },
+  });
+  const extraCount = Math.max(0, activeRepCount - planConfig.includedReps);
+  const prorationFactor = daysInPeriod / daysInFullMonth;
+  const proratedChargeCents = Math.round(extraCount * planConfig.perRepCents * prorationFactor);
+
+  // Step 4: open or get the BillingPeriod for this window. We do this here
+  // rather than at activation so the audit table reflects exactly what was
+  // billed (with the right plan + included-reps snapshot).
+  const billingPeriod = await prisma.billingPeriod.upsert({
+    where: { shopId_periodStart: { shopId, periodStart } },
+    create: {
+      shopId,
+      periodStart,
+      periodEnd,
+      plan: shop.billingPlan,
+      includedReps: planConfig.includedReps,
+      perRepCents: planConfig.perRepCents,
+      revenueSharePercent: planConfig.revenueSharePercent,
+      activeRepCount,
+      extraRepCount: extraCount,
+      orderRevenueCents: netRevenueCents,
+      revenueShareCents,
+      repChargesCents: proratedChargeCents,
+      extraRepsCharged: extraCount,
+    },
+    update: {
+      activeRepCount,
+      extraRepCount: extraCount,
+      orderRevenueCents: netRevenueCents,
+      revenueShareCents,
+      repChargesCents: proratedChargeCents,
+      extraRepsCharged: extraCount,
+    },
+  });
+
+  const result: MonthlyUsageResult = {
+    shopId: shop.id,
+    shopDomain: shop.shopifyDomain,
+    period: { start: periodStart, end: periodEnd, daysInPeriod, daysInFullMonth },
+    reconciliation,
+    revenueShare: {
+      paidEventCount: paidEvents.length,
+      refundedEventCount: refundedEvents.length,
+      paidTotalCents,
+      refundedTotalCents,
+      netRevenueCents,
+      revenueShareCents,
+      reported: false,
+    },
+    extraReps: {
+      activeCount: activeRepCount,
+      includedCount: planConfig.includedReps,
+      extraCount,
+      proratedChargeCents,
+      reported: false,
+    },
+    billingPeriodId: billingPeriod.id,
+  };
+
+  const periodKey = periodStart.toISOString().slice(0, 7); // YYYY-MM
+
+  // Step 5a: report revenue share.
+  if (revenueShareCents > 0) {
+    const description = `Revenue share for ${periodKey} (${planConfig.revenueSharePercent}% of $${(netRevenueCents / 100).toFixed(2)} net)`;
+    const idempotencyKey = `revenue-${shopId}-${periodKey}`;
+
+    if (bypassBilling) {
+      result.revenueShare.reported = true;
+      console.log(`[MonthlyBilling] ${shop.shopifyDomain} bypassed: revenue share $${(revenueShareCents / 100).toFixed(2)}`);
+    } else {
+      const usageResult = await reportUsageCharge(
+        admin,
+        shop.usageLineItemId!,
+        revenueShareCents,
+        description,
+        idempotencyKey
+      );
+      result.revenueShare.reported = usageResult.success;
+      result.revenueShare.usageRecordId = usageResult.usageRecordId;
+      result.revenueShare.error = usageResult.error;
+    }
+  } else {
+    result.revenueShare.reported = true;
+  }
+
+  // Step 5b: report extra rep charges.
+  if (proratedChargeCents > 0) {
+    const description = `Extra sales reps for ${periodKey} (${extraCount} × $${(planConfig.perRepCents / 100).toFixed(2)}, prorated ${daysInPeriod}/${daysInFullMonth} days)`;
+    const idempotencyKey = `reps-${shopId}-${periodKey}`;
+
+    if (bypassBilling) {
+      result.extraReps.reported = true;
+      console.log(`[MonthlyBilling] ${shop.shopifyDomain} bypassed: extra reps $${(proratedChargeCents / 100).toFixed(2)}`);
+    } else {
+      const usageResult = await reportUsageCharge(
+        admin,
+        shop.usageLineItemId!,
+        proratedChargeCents,
+        description,
+        idempotencyKey
+      );
+      result.extraReps.reported = usageResult.success;
+      result.extraReps.usageRecordId = usageResult.usageRecordId;
+      result.extraReps.error = usageResult.error;
+    }
+  } else {
+    result.extraReps.reported = true;
+  }
+
+  // Step 6: tag all events with the billing period + usage record. This is
+  // the audit trail — every event is permanently anchored to a cycle.
+  const reportedAt = new Date();
+  const eventIds = events.map((e) => e.id);
+  if (eventIds.length > 0) {
+    await prisma.billingEvent.updateMany({
+      where: { id: { in: eventIds } },
+      data: {
+        billingPeriodId: billingPeriod.id,
+        shopifyUsageRecordId: result.revenueShare.usageRecordId ?? null,
+        reportedAt,
+      },
+    });
+  }
+
+  // Step 7: close this period; advance shop to current month.
+  const currentMonth = getCalendarMonthBoundaries(now);
+  await prisma.$transaction([
+    prisma.billingPeriod.update({
+      where: { id: billingPeriod.id },
+      data: { status: "closed", finalizedAt: reportedAt },
+    }),
+    prisma.shop.update({
+      where: { id: shopId },
+      data: {
+        currentPeriodStart: currentMonth.start,
+        currentPeriodEnd: currentMonth.end,
+      },
+    }),
+  ]);
+
+  console.log(
+    `[MonthlyBilling] ${shop.shopifyDomain} ${periodKey}: $${(netRevenueCents / 100).toFixed(2)} net revenue → $${(revenueShareCents / 100).toFixed(2)} share, ${extraCount} extra reps → $${(proratedChargeCents / 100).toFixed(2)}`
+  );
+
+  return result;
+}
+
+/**
+ * Recompute the denormalized `Order.paidAmountCents` and
+ * `Order.refundedAmountCents` columns from the BillingEvent ledger. Use
+ * this after a backfill, or any time the running totals might have drifted
+ * from the ledger (e.g. manual DB edits, partial migrations).
+ *
+ * Authoritative source = `BillingEvent`. Order columns are always rebuilt
+ * to match: `paidAmountCents = sum(PAID events)`, `refundedAmountCents =
+ * sum(REFUNDED events)`.
+ *
+ * Idempotent — running this twice gives the same result.
+ */
+export async function recomputeOrderAmountsFromEvents(
+  shopId?: string
+): Promise<{ ordersUpdated: number }> {
+  // Group sums by orderId + type. Skip rows with no orderId (manual adjustments).
+  const groups = await prisma.billingEvent.groupBy({
+    by: ["orderId", "type"],
+    where: {
+      orderId: { not: null },
+      ...(shopId && { shopId }),
+    },
+    _sum: { amountCents: true },
+  });
+
+  // Reduce to one row per order with the two totals.
+  const totals = new Map<string, { paid: number; refunded: number }>();
+  for (const g of groups) {
+    if (!g.orderId) continue;
+    const t = totals.get(g.orderId) ?? { paid: 0, refunded: 0 };
+    if (g.type === "PAID") t.paid = g._sum.amountCents ?? 0;
+    if (g.type === "REFUNDED") t.refunded = g._sum.amountCents ?? 0;
+    totals.set(g.orderId, t);
+  }
+
+  let ordersUpdated = 0;
+  for (const [orderId, t] of totals) {
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { paidAmountCents: t.paid, refundedAmountCents: t.refunded },
+    });
+    ordersUpdated++;
+  }
+
+  return { ordersUpdated };
+}
+
+/**
+ * One-shot migration helper: walk every existing Order with paidAt or
+ * refundedAt and create matching BillingEvent rows, then resync the
+ * denormalized Order amount columns from the ledger. Idempotent — safe to
+ * re-run.
+ */
+export async function backfillBillingEventsFromOrders(
+  /** Optional: limit to a single shop */
+  shopId?: string
+): Promise<{
+  paidCreated: number;
+  refundedCreated: number;
+  ordersScanned: number;
+  ordersResynced: number;
+}> {
+  const orders = await prisma.order.findMany({
+    where: {
+      ...(shopId && { shopId }),
+      OR: [{ paidAt: { not: null } }, { refundedAt: { not: null } }],
+    },
+    select: {
+      id: true,
+      shopId: true,
+      totalCents: true,
+      paidAt: true,
+      refundedAt: true,
+    },
+  });
+
+  let paidCreated = 0;
+  let refundedCreated = 0;
+
+  for (const o of orders) {
+    if (o.paidAt) {
+      const before = await prisma.billingEvent.count({
+        where: { shopId: o.shopId, orderId: o.id, type: "PAID" },
+      });
+      await recordBillingEvent({
+        shopId: o.shopId,
+        orderId: o.id,
+        type: "PAID",
+        amountCents: o.totalCents,
+        occurredAt: o.paidAt,
+        source: "backfill",
+      });
+      const after = await prisma.billingEvent.count({
+        where: { shopId: o.shopId, orderId: o.id, type: "PAID" },
+      });
+      if (after > before) paidCreated++;
+    }
+    if (o.refundedAt) {
+      const before = await prisma.billingEvent.count({
+        where: { shopId: o.shopId, orderId: o.id, type: "REFUNDED" },
+      });
+      await recordBillingEvent({
+        shopId: o.shopId,
+        orderId: o.id,
+        type: "REFUNDED",
+        amountCents: o.totalCents,
+        occurredAt: o.refundedAt,
+        source: "backfill",
+      });
+      const after = await prisma.billingEvent.count({
+        where: { shopId: o.shopId, orderId: o.id, type: "REFUNDED" },
+      });
+      if (after > before) refundedCreated++;
+    }
+  }
+
+  // Resync the denormalized columns from the ledger. This handles the
+  // migration case where events already existed before the columns were
+  // added (recordBillingEvent's increment-on-new-event wouldn't have run).
+  const { ordersUpdated } = await recomputeOrderAmountsFromEvents(shopId);
+
+  return {
+    paidCreated,
+    refundedCreated,
+    ordersScanned: orders.length,
+    ordersResynced: ordersUpdated,
+  };
 }

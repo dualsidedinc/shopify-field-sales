@@ -1,21 +1,17 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { ChevronLeft, User, MapPin, Phone, Mail, Plus, ChevronRight } from 'lucide-react';
+import { ChevronLeft, User, MapPin, Phone, Mail, Plus } from 'lucide-react';
 import { api } from '@/lib/api';
-
-interface OrderListItem {
-  id: string;
-  orderNumber: string;
-  shopifyOrderNumber: string | null;
-  totalCents: number;
-  currency: string;
-  status: string;
-  placedAt: string | null;
-  createdAt: string;
-}
+import { OrderList, type OrderListItemData } from '@/components/lists/OrderListItem';
+import {
+  ORDER_FILTER_KEYS,
+  ORDER_FILTER_LABELS,
+  filterToStatusParam,
+  type OrderFilterKey,
+} from '@/lib/orderStatus';
 
 interface CompanyContact {
   id: string;
@@ -68,26 +64,21 @@ export default function CompanyDetailPage() {
   const id = params.id as string;
 
   const [company, setCompany] = useState<CompanyWithDetails | null>(null);
-  const [orders, setOrders] = useState<OrderListItem[]>([]);
+  const [orders, setOrders] = useState<OrderListItemData[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<OrderFilterKey>('all');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Fetch the company once.
   useEffect(() => {
-    async function fetchData() {
+    async function fetchCompany() {
       try {
-        const [companyResult, ordersResult] = await Promise.all([
-          api.client.companies.get(id),
-          api.client.orders.list({ companyId: id, pageSize: 5 }),
-        ]);
-
-        if (companyResult.error) {
-          setError(companyResult.error.message);
+        const result = await api.client.companies.get(id);
+        if (result.error) {
+          setError(result.error.message);
         } else {
-          setCompany(companyResult.data as unknown as CompanyWithDetails);
-        }
-
-        if (ordersResult.data) {
-          setOrders(ordersResult.data.items as unknown as OrderListItem[]);
+          setCompany(result.data as unknown as CompanyWithDetails);
         }
       } catch (err) {
         setError('Failed to load company');
@@ -96,53 +87,31 @@ export default function CompanyDetailPage() {
         setLoading(false);
       }
     }
-
-    fetchData();
+    fetchCompany();
   }, [id]);
 
-  const formatPrice = (cents: number, currency: string = 'USD') => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency,
-    }).format(cents / 100);
-  };
-
-  const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-
-    if (diffDays === 0) {
-      return 'Today';
-    } else if (diffDays === 1) {
-      return 'Yesterday';
-    } else if (diffDays < 7) {
-      return `${diffDays}d ago`;
-    } else {
-      return new Intl.DateTimeFormat('en-US', {
-        month: 'short',
-        day: 'numeric',
-      }).format(date);
+  // Re-fetch orders whenever the status filter changes.
+  const fetchOrders = useCallback(async () => {
+    setOrdersLoading(true);
+    try {
+      const { data } = await api.client.orders.list({
+        companyId: id,
+        pageSize: 30,
+        status: filterToStatusParam(statusFilter),
+      });
+      if (data) {
+        setOrders(data.items as unknown as OrderListItemData[]);
+      }
+    } catch (err) {
+      console.error('Error fetching orders:', err);
+    } finally {
+      setOrdersLoading(false);
     }
-  };
+  }, [id, statusFilter]);
 
-  const getStatusBadge = (status: string) => {
-    const s = status.toLowerCase();
-    if (s.includes('draft')) return 'badge-draft';
-    if (s.includes('awaiting')) return 'badge-awaiting';
-    if (s.includes('fulfilled') || s.includes('paid')) return 'badge-paid';
-    if (s.includes('pending')) return 'badge-pending';
-    if (s.includes('cancelled') || s.includes('refund')) return 'badge-cancelled';
-    return 'badge-default';
-  };
-
-  const formatStatus = (status: string) => {
-    return status
-      .split('_')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-      .join(' ');
-  };
+  useEffect(() => {
+    fetchOrders();
+  }, [fetchOrders]);
 
   const formatAddress = (location: CompanyLocation) => {
     const parts = [location.address1];
@@ -154,34 +123,31 @@ export default function CompanyDetailPage() {
     return parts.join('\n');
   };
 
-  if (loading) {
-    return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-2">
-          <Link
-            href="/companies"
-            className="min-w-touch min-h-touch flex items-center justify-center -ml-2"
-          >
-            <ChevronLeft className="w-6 h-6" />
-          </Link>
-          <h1 className="text-xl font-bold text-gray-900">Loading...</h1>
-        </div>
+  // Compact back-arrow header — used in loading / error / loaded states.
+  const renderHeader = (title: string, subtitle?: string | null) => (
+    <div className="flex items-center gap-1.5 pt-3 pb-3">
+      <Link
+        href="/companies"
+        aria-label="Back to companies"
+        className="p-1.5 -ml-1.5 text-gray-500 hover:text-gray-700 flex-shrink-0"
+      >
+        <ChevronLeft className="w-5 h-5" />
+      </Link>
+      <div className="min-w-0">
+        <h1 className="text-base font-semibold text-gray-900 truncate leading-tight">{title}</h1>
+        {subtitle && <p className="text-xs text-gray-500 leading-tight">{subtitle}</p>}
       </div>
-    );
+    </div>
+  );
+
+  if (loading) {
+    return <div>{renderHeader('Loading...')}</div>;
   }
 
   if (error || !company) {
     return (
-      <div className="space-y-6">
-        <div className="flex items-center gap-2">
-          <Link
-            href="/companies"
-            className="min-w-touch min-h-touch flex items-center justify-center -ml-2"
-          >
-            <ChevronLeft className="w-6 h-6" />
-          </Link>
-          <h1 className="text-xl font-bold text-gray-900">Error</h1>
-        </div>
+      <div>
+        {renderHeader('Error')}
         <div className="card text-center py-8">
           <p className="text-red-500">{error || 'Company not found'}</p>
           <Link href="/companies" className="btn-secondary mt-4 inline-block">
@@ -192,199 +158,165 @@ export default function CompanyDetailPage() {
     );
   }
 
+  const subtitleParts = [
+    company.accountNumber && `#${company.accountNumber}`,
+    company.territory?.name,
+  ].filter(Boolean);
+  const subtitle = subtitleParts.length > 0 ? subtitleParts.join(' · ') : null;
+
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <Link
-          href="/companies"
-          className="min-w-touch min-h-touch flex items-center justify-center -ml-2"
-        >
-          <ChevronLeft className="w-6 h-6" />
-        </Link>
-        <div>
-          <h1 className="text-xl font-bold text-gray-900">{company.name}</h1>
-          <p className="text-sm text-gray-500">
-            {company.accountNumber && <span className="font-medium">#{company.accountNumber}</span>}
-            {company.accountNumber && company.territory && ' • '}
-            {company.territory && company.territory.name}
-          </p>
-        </div>
-      </div>
+    <div>
+      {renderHeader(company.name, subtitle)}
 
-      {/* Company Info
-      <section className="card">
-        <h2 className="font-semibold text-gray-900 mb-3">Company Info</h2>
-        <div className="space-y-2 text-sm">
-          <div className="flex justify-between">
-            <span className="text-gray-500">Payment Terms</span>
-            <span className="text-gray-900">{company.paymentTerms.replace('_', ' ')}</span>
-          </div>
-          {company.territory && (
-            <div className="flex justify-between">
-              <span className="text-gray-500">Territory</span>
-              <span className="text-gray-900">{company.territory.name}</span>
-            </div>
-          )}
-          {company.assignedRep && (
-            <div className="flex justify-between">
-              <span className="text-gray-500">Assigned Rep</span>
-              <span className="text-gray-900">
-                {company.assignedRep.firstName} {company.assignedRep.lastName}
-              </span>
-            </div>
-          )}
-        </div>
-      </section>
-       */}
-
-      {/* Recent Orders */}
-      <section className="card">
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="font-semibold text-gray-900">Recent Orders</h2>
-          <Link
-            href={`/orders/create?companyId=${id}`}
-            className="text-sm text-primary-600 font-medium flex items-center gap-1 hover:text-primary-700"
-          >
-            <Plus className="w-4 h-4" />
-            Create Order
-          </Link>
-        </div>
-        {orders.length === 0 ? (
-          <p className="text-sm text-gray-500">No orders yet</p>
-        ) : (
-          <div className="space-y-2">
-            {orders.map((order) => (
+      <div className="space-y-6">
+        {/* Orders — table-style list with status filter */}
+        <section className="card">
+          <div className="flex items-center justify-between gap-2 mb-3">
+            <h2 className="font-semibold text-gray-900">Orders</h2>
+            <div className="flex items-center gap-2">
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as OrderFilterKey)}
+                aria-label="Filter orders by status"
+                className="h-8 text-xs bg-white border border-gray-300 rounded-lg pl-2 pr-7 text-gray-900 focus:outline-none focus:ring-2 focus:ring-primary-500 appearance-none cursor-pointer"
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%236B7280'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`,
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 6px center',
+                  backgroundSize: '12px',
+                }}
+              >
+                {ORDER_FILTER_KEYS.map((key) => (
+                  <option key={key} value={key}>
+                    {ORDER_FILTER_LABELS[key]}
+                  </option>
+                ))}
+              </select>
               <Link
-                key={order.id}
-                href={`/orders/${order.id}`}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                href={`/orders/create?companyId=${id}`}
+                className="inline-flex items-center gap-1 h-8 px-2.5 text-xs font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50"
               >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <p className="font-medium text-gray-900">
-                      {order.shopifyOrderNumber || order.orderNumber}
-                    </p>
-                    <span className={getStatusBadge(order.status)}>
-                      {formatStatus(order.status)}
-                    </span>
-                  </div>
-                  <p className="text-xs text-gray-500 mt-0.5">
-                    {formatDate(order.placedAt || order.createdAt)}
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <p className="font-semibold text-gray-900">
-                    {formatPrice(order.totalCents, order.currency)}
-                  </p>
-                  <ChevronRight className="w-4 h-4 text-gray-400" />
-                </div>
+                <Plus className="w-3.5 h-3.5" />
+                Create
               </Link>
-            ))}
+            </div>
           </div>
-        )}
-      </section>
 
-      {/* Contacts */}
-      <section className="card">
-        <h2 className="font-semibold text-gray-900 mb-3">Contacts</h2>
-        {company.contacts.length === 0 ? (
-          <p className="text-sm text-gray-500">No contacts on file</p>
-        ) : (
-          <div className="space-y-3">
-            {company.contacts.map((contact) => (
-              <div
-                key={contact.id}
-                className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg"
-              >
-                <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0">
-                  <User className="w-5 h-5 text-primary-600" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="font-medium text-gray-900">
-                      {contact.firstName} {contact.lastName}
-                    </p>
-                    {contact.isPrimary && (
-                      <span className="badge bg-primary-100 text-primary-700">Primary</span>
-                    )}
+          <div className="-mx-4 -mb-4 border-t border-gray-100">
+            <OrderList
+              orders={orders}
+              loading={ordersLoading}
+              hideCompany
+              bare
+              emptyMessage={
+                statusFilter === 'all' ? 'No orders yet' : 'No orders match this filter'
+              }
+              emptySubMessage=""
+            />
+          </div>
+        </section>
+
+        {/* Contacts */}
+        <section className="card">
+          <h2 className="font-semibold text-gray-900 mb-3">Contacts</h2>
+          {company.contacts.length === 0 ? (
+            <p className="text-sm text-gray-500">No contacts on file</p>
+          ) : (
+            <ul className="divide-y divide-gray-100">
+              {company.contacts.map((contact) => (
+                <li
+                  key={contact.id}
+                  className="flex items-start gap-3 py-3 first:pt-1 last:pb-1"
+                >
+                  <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center flex-shrink-0">
+                    <User className="w-5 h-5 text-primary-600" />
                   </div>
-                  {contact.title && (
-                    <p className="text-sm text-gray-500">{contact.title}</p>
-                  )}
-                  <div className="flex flex-col gap-1 mt-2">
-                    <a
-                      href={`mailto:${contact.email}`}
-                      className="flex items-center gap-2 text-sm text-gray-600 hover:text-primary-600"
-                    >
-                      <Mail className="w-4 h-4" />
-                      <span className="truncate">{contact.email}</span>
-                    </a>
-                    {contact.phone && (
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium text-gray-900">
+                        {contact.firstName} {contact.lastName}
+                      </p>
+                      {contact.isPrimary && (
+                        <span className="badge bg-primary-100 text-primary-700">Primary</span>
+                      )}
+                    </div>
+                    {contact.title && (
+                      <p className="text-sm text-gray-500">{contact.title}</p>
+                    )}
+                    <div className="flex flex-col gap-1 mt-2">
                       <a
-                        href={`tel:${contact.phone}`}
+                        href={`mailto:${contact.email}`}
                         className="flex items-center gap-2 text-sm text-gray-600 hover:text-primary-600"
                       >
+                        <Mail className="w-4 h-4" />
+                        <span className="truncate">{contact.email}</span>
+                      </a>
+                      {contact.phone && (
+                        <a
+                          href={`tel:${contact.phone}`}
+                          className="flex items-center gap-2 text-sm text-gray-600 hover:text-primary-600"
+                        >
+                          <Phone className="w-4 h-4" />
+                          <span>{contact.phone}</span>
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {/* Locations */}
+        <section className="card">
+          <h2 className="font-semibold text-gray-900 mb-3">Locations</h2>
+          {company.locations.length === 0 ? (
+            <p className="text-sm text-gray-500">No locations on file</p>
+          ) : (
+            <ul className="divide-y divide-gray-100">
+              {company.locations.map((location) => (
+                <li
+                  key={location.id}
+                  className="flex items-start gap-3 py-3 first:pt-1 last:pb-1"
+                >
+                  <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+                    <MapPin className="w-5 h-5 text-green-600" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-medium text-gray-900">{location.name}</p>
+                      {location.isPrimary && (
+                        <span className="badge bg-primary-100 text-primary-700">Primary</span>
+                      )}
+                      {location.isShippingAddress && (
+                        <span className="badge bg-green-100 text-green-700">Shipping</span>
+                      )}
+                      {location.isBillingAddress && (
+                        <span className="badge bg-blue-100 text-blue-700">Billing</span>
+                      )}
+                    </div>
+                    {location.address1 && (
+                      <p className="text-sm text-gray-600 whitespace-pre-line mt-1">
+                        {formatAddress(location)}
+                      </p>
+                    )}
+                    {location.phone && (
+                      <a
+                        href={`tel:${location.phone}`}
+                        className="flex items-center gap-2 text-sm text-gray-600 hover:text-primary-600 mt-2"
+                      >
                         <Phone className="w-4 h-4" />
-                        <span>{contact.phone}</span>
+                        <span>{location.phone}</span>
                       </a>
                     )}
                   </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* Locations */}
-      <section className="card">
-        <h2 className="font-semibold text-gray-900 mb-3">Locations</h2>
-        {company.locations.length === 0 ? (
-          <p className="text-sm text-gray-500">No locations on file</p>
-        ) : (
-          <div className="space-y-3">
-            {company.locations.map((location) => (
-              <div
-                key={location.id}
-                className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg"
-              >
-                <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
-                  <MapPin className="w-5 h-5 text-green-600" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <p className="font-medium text-gray-900">{location.name}</p>
-                    {location.isPrimary && (
-                      <span className="badge bg-primary-100 text-primary-700">Primary</span>
-                    )}
-                    {location.isShippingAddress && (
-                      <span className="badge bg-green-100 text-green-700">Shipping</span>
-                    )}
-                    {location.isBillingAddress && (
-                      <span className="badge bg-blue-100 text-blue-700">Billing</span>
-                    )}
-                  </div>
-                  {location.address1 && (
-                    <p className="text-sm text-gray-600 whitespace-pre-line mt-1">
-                      {formatAddress(location)}
-                    </p>
-                  )}
-                  {location.phone && (
-                    <a
-                      href={`tel:${location.phone}`}
-                      className="flex items-center gap-2 text-sm text-gray-600 hover:text-primary-600 mt-2"
-                    >
-                      <Phone className="w-4 h-4" />
-                      <span>{location.phone}</span>
-                    </a>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </div>
     </div>
   );
 }

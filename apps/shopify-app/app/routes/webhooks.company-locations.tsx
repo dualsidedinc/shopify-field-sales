@@ -1,35 +1,20 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
-import { processCompanyLocationWebhook } from "../services/webhook.server";
-import { syncCompanyDetails } from "../services/companySync.server";
-
-interface CompanyLocationPayload {
-  id: number;
-  company_id: number;
-}
+import { enqueueJob } from "../services/queue/enqueue.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop, payload } = await authenticate.webhook(request);
 
-  console.log(`[Webhook] Received ${topic} for ${shop}`);
+  const id = (payload as { id?: number }).id;
+  const idempotencyKey = id ? String(id) : null;
 
-  const locationPayload = payload as unknown as CompanyLocationPayload;
+  await enqueueJob({
+    kind: "WEBHOOK",
+    topic,
+    payload: { shopDomain: shop, topic, payload },
+    idempotencyKey,
+    source: `shopify:${topic}`,
+  });
 
-  if (topic === "COMPANY_LOCATIONS_DELETE") {
-    // Use the existing delete handler
-    const result = await processCompanyLocationWebhook(shop, topic, payload);
-    if (!result.success) {
-      console.error(`[Webhook] Failed to process ${topic}:`, result.error);
-    }
-  } else {
-    // For create/update, sync the entire company to get payment terms via GraphQL
-    const shopifyCompanyId = String(locationPayload.company_id);
-    const result = await syncCompanyDetails(shop, shopifyCompanyId);
-    if (!result.success) {
-      console.error(`[Webhook] Failed to sync company for location:`, result.error);
-    }
-  }
-
-  // Always return 200 to acknowledge receipt
   return new Response(null, { status: 200 });
 };

@@ -1,19 +1,20 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
-import { processDraftOrderWebhook } from "../services/order.server";
+import { enqueueJob } from "../services/queue/enqueue.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop, payload } = await authenticate.webhook(request);
 
-  console.log(`[Webhook] Received ${topic} for ${shop}`);
+  const id = (payload as { id?: number }).id;
+  const idempotencyKey = id ? String(id) : null;
 
-  // Process draft order webhooks (DRAFT_ORDERS_UPDATE, etc.)
-  const result = await processDraftOrderWebhook(shop, topic, payload as Parameters<typeof processDraftOrderWebhook>[2]);
+  await enqueueJob({
+    kind: "WEBHOOK",
+    topic,
+    payload: { shopDomain: shop, topic, payload },
+    idempotencyKey,
+    source: `shopify:${topic}`,
+  });
 
-  if (!result.success) {
-    console.error(`[Webhook] Failed to process ${topic}:`, result.error);
-  }
-
-  // Always return 200 to acknowledge receipt
   return new Response(null, { status: 200 });
 };

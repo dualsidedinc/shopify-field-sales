@@ -225,8 +225,8 @@ export default function OrderDetailPage() {
       basePriceCents: item.unitPriceCents, // Use unit price as base for existing orders
       discountCents: item.discountCents,
       totalCents: item.totalCents,
-      // Promotion tracking - mark free items
-      isFreeItem: item.isPromotionItem || false,
+      // Promotion tracking — whether this line renders as free/discounted is
+      // derived from discountCents + totalCents, not a stored flag.
       promotionId: item.promotionId || undefined,
       promotionName: item.promotionName || undefined,
       // Quantity rules - not stored on existing orders, default to null

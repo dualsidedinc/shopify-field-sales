@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { api } from '@/lib/api';
+import { PageHeader } from '@/components/ui';
 import type { QuotaPaceIndicator } from '@field-sales/shared';
 
 interface Profile {
@@ -38,12 +39,6 @@ interface QuotaProgress {
   onPaceIndicator: QuotaPaceIndicator;
 }
 
-interface RepMetrics {
-  revenue: number;
-  revenueChange: number;
-  quota: QuotaProgress | null;
-}
-
 interface CompanyRevenue {
   id: string;
   name: string;
@@ -51,20 +46,29 @@ interface CompanyRevenue {
   revenueCents: number;
 }
 
+interface RepMetrics {
+  revenue: number;
+  revenueChange: number;
+  quota: QuotaProgress | null;
+  companiesByRevenue: CompanyRevenue[];
+}
+
 export default function AccountPage() {
   const router = useRouter();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [metrics, setMetrics] = useState<RepMetrics | null>(null);
-  const [companiesByRevenue, setCompaniesByRevenue] = useState<CompanyRevenue[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Top companies are returned as part of metrics now — derived state, no
+  // separate fetch.
+  const companiesByRevenue: CompanyRevenue[] = metrics?.companiesByRevenue ?? [];
 
   useEffect(() => {
     async function fetchData() {
       try {
-        const [profileRes, metricsRes, companiesRes] = await Promise.all([
+        const [profileRes, metricsRes] = await Promise.all([
           api.client.profile.get(),
           fetch('/api/profile/metrics').then((r) => r.json()),
-          fetch('/api/profile/companies-by-revenue').then((r) => r.json()),
         ]);
 
         if (profileRes.data) {
@@ -72,9 +76,6 @@ export default function AccountPage() {
         }
         if (metricsRes.data) {
           setMetrics(metricsRes.data);
-        }
-        if (companiesRes.data) {
-          setCompaniesByRevenue(companiesRes.data);
         }
       } catch (error) {
         console.error('Error fetching data:', error);
@@ -126,7 +127,10 @@ export default function AccountPage() {
   };
 
   return (
-    <div className="space-y-6">
+    <div>
+      <PageHeader title="My Account" />
+
+      <div className="space-y-6">
       {/* Revenue & Quota Cards */}
       {!loading && metrics && (
         <div className="grid grid-cols-2 gap-4">
@@ -258,6 +262,7 @@ export default function AccountPage() {
       >
         Sign Out
       </button>
+      </div>
     </div>
   );
 }

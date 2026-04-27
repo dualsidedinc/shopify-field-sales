@@ -427,7 +427,7 @@ export class ApiClient {
     decline: (id: string, comment?: string): Promise<HttpResponse<ApiOrderDetail>> =>
       this.http.post(`/api/orders/${id}/decline`, { comment }),
 
-    addComment: (id: string, comment: string): Promise<HttpResponse<void>> =>
+    addComment: (id: string, comment: string): Promise<HttpResponse<ApiOrderDetail>> =>
       this.http.post(`/api/orders/${id}/comments`, { comment }),
 
     delete: (id: string): Promise<HttpResponse<void>> =>

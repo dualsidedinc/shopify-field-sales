@@ -85,7 +85,12 @@
       "Bash(npm install)",
       "Bash(git checkout:*)",
       "Bash(shopify app generate extension:*)",
-      "Bash(NPM_CONFIG_WORKSPACES=false npm install:*)"
+      "Bash(NPM_CONFIG_WORKSPACES=false npm install:*)",
+      "WebFetch(domain:community.shopify.dev)",
+      "WebFetch(domain:github.com)",
+      "Bash(awk '/^export async function createSalesRep/,/^export async function/' /Users/jasonrichey/Documents/Apps/shopify-field-sales/apps/shopify-app/app/services/salesRep.server.ts)",
+      "Bash(awk 'NR<954 || NR>1220' /Users/jasonrichey/Documents/Apps/shopify-field-sales/apps/shopify-app/app/services/billing.server.ts)",
+      "Bash(mv /tmp/billing.server.new.ts /Users/jasonrichey/Documents/Apps/shopify-field-sales/apps/shopify-app/app/services/billing.server.ts)"
     ]
   }
 }

@@ -202,6 +202,8 @@ Multi-select product picker with variant selection:
 
 ## API Endpoints
 
+> All mutation endpoints (`POST`, `PUT`, `DELETE`) on the field-app side are thin proxies. The actual logic lives on shopify-app under matching `/api/internal/orders/*` routes. See [`docs/architecture.md`](../../../docs/architecture.md) for the proxy pattern. Reads (`GET`) are direct DB queries from field-app.
+
 ### List Orders
 ```
 GET /api/orders?page=1&pageSize=20&companyId=xxx

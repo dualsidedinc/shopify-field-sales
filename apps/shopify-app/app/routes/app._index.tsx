@@ -2,21 +2,11 @@ import type { LoaderFunctionArgs, HeadersFunction } from "react-router";
 import { useLoaderData, useSearchParams } from "react-router";
 import { useCallback, useEffect } from "react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
-import { getDashboardData, type DashboardData, type TopSalesRep, type TopCompany } from "../services/shop.server";
+import { getDashboardData, type DashboardData } from "../services/shop.server";
 import { DateRangeSelector, getDateRange } from "../components/DateRangeSelector";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   return getDashboardData(request);
-};
-
-// Placeholder metrics - will be replaced with real data
-const metrics = {
-  accounts: { value: 156, change: 12, changePercent: 8.3 },
-  orders: { value: 48, change: 5, changePercent: 11.6 },
-  revenue: { value: 24850, change: 3200, changePercent: 14.8 },
-  revenuePerRep: { value: 4142, change: -180, changePercent: -4.2 },
-  pendingOrders: 7,
-  pendingRevenue: 3420,
 };
 
 function formatCurrency(cents: number): string {
@@ -42,6 +32,7 @@ function MetricCard({
   const isPositive = changePercent >= 0;
   const displayValue = isCurrency ? formatCurrency(value) : value.toLocaleString();
   const arrow = isPositive ? "↑" : "↓";
+  const showChange = changePercent !== 0;
 
   return (
     <s-box padding="base">
@@ -49,9 +40,11 @@ function MetricCard({
         <s-heading>{label}</s-heading>
         <s-stack direction="inline" gap="small">
           <s-heading><span style={{ fontSize: "15px" }}>{displayValue}</span></s-heading>
-          <s-badge tone={isPositive ? "success" : "critical"}>
-            {arrow} {Math.abs(changePercent)}%
-          </s-badge>
+          {showChange && (
+            <s-badge tone={isPositive ? "success" : "critical"}>
+              {arrow} {Math.abs(changePercent)}%
+            </s-badge>
+          )}
         </s-stack>
       </s-stack>
     </s-box>
@@ -135,7 +128,7 @@ function Leaderboard({
 }
 
 export default function Index() {
-  const { shopName, topSalesReps, topCompanies } = useLoaderData<DashboardData>();
+  const { shopName, metrics, topSalesReps, topCompanies } = useLoaderData<DashboardData>();
   const [searchParams, setSearchParams] = useSearchParams();
 
   // Get date range from URL params or use default (This Month)
@@ -205,7 +198,7 @@ export default function Index() {
           <ActionCard
             icon="money"
             label="pending revenue"
-            value={formatCurrency(metrics.pendingRevenue * 100)}
+            value={formatCurrency(metrics.pendingRevenue)}
           />
         </s-stack>
 

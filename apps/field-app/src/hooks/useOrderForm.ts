@@ -7,7 +7,7 @@
  * Uses the same logic pattern as the shared hook but with platform-specific types.
  */
 
-import { useState, useRef, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import type { OrderStatus, PaymentTerms } from '@field-sales/database';
 import type { CompanyOption } from '@/components/pickers/CompanyPicker';
 import type { ContactOption } from '@/components/pickers/ContactPicker';
@@ -33,7 +33,6 @@ export interface OrderLineItem {
   basePriceCents: number;    // Base price before volume pricing
   discountCents: number;
   totalCents: number;
-  isFreeItem?: boolean;
   promotionId?: string;
   promotionName?: string;
   // Quantity rules from B2B catalog
@@ -41,6 +40,23 @@ export interface OrderLineItem {
   quantityMax: number | null;
   quantityIncrement: number | null;
   priceBreaks: PriceBreak[];
+}
+
+/**
+ * Whether a line item should render as free. Derived from the discount —
+ * we don't store a flag. A line is free when its discount covers the full
+ * price (total ends at $0). Any nonzero total with a discount is partially
+ * discounted, not free.
+ */
+export function isFreeLineItem(item: OrderLineItem): boolean {
+  return item.discountCents > 0 && item.totalCents === 0;
+}
+
+/**
+ * Partially discounted: some discount applied but the user still pays.
+ */
+export function isDiscountedLineItem(item: OrderLineItem): boolean {
+  return item.discountCents > 0 && item.totalCents > 0;
 }
 
 /**
@@ -219,20 +235,20 @@ export function useOrderForm(initialData?: InitialOrderData) {
     };
   }, [initialData]);
 
-  // Store initial state for dirty checking
-  const initialRef = useRef<OrderFormData | null>(null);
-
   // Form state
-  const [formData, setFormData] = useState<OrderFormData>(() => {
-    const data = buildFormData();
-    initialRef.current = JSON.parse(JSON.stringify(data));
-    return data;
-  });
+  const [formData, setFormData] = useState<OrderFormData>(buildFormData);
+
+  // Snapshot of the "saved" state for dirty checking. Held in useState (not
+  // useRef) so that updates after save trigger a re-render and isDirty
+  // recomputes — a ref mutation alone would leave isDirty stale.
+  const [initialSnapshot, setInitialSnapshot] = useState<OrderFormData>(
+    () => JSON.parse(JSON.stringify(formData))
+  );
 
   // Extract only user-editable fields for dirty comparison
   const getUserEditableState = useCallback((data: OrderFormData) => {
     const editableLineItems = data.lineItems
-      .filter((item) => !item.isFreeItem)
+      .filter((item) => !isFreeLineItem(item))
       .map((item) => ({
         shopifyVariantId: item.shopifyVariantId,
         quantity: item.quantity,
@@ -252,22 +268,19 @@ export function useOrderForm(initialData?: InitialOrderData) {
 
   // Check if form is dirty
   const isDirty = useMemo(() => {
-    if (!initialRef.current) return false;
     const currentEditable = getUserEditableState(formData);
-    const initialEditable = getUserEditableState(initialRef.current);
+    const initialEditable = getUserEditableState(initialSnapshot);
     return JSON.stringify(currentEditable) !== JSON.stringify(initialEditable);
-  }, [formData, getUserEditableState]);
+  }, [formData, initialSnapshot, getUserEditableState]);
 
   // Reset to initial state
   const resetForm = useCallback(() => {
-    if (initialRef.current) {
-      setFormData(JSON.parse(JSON.stringify(initialRef.current)));
-    }
-  }, []);
+    setFormData(JSON.parse(JSON.stringify(initialSnapshot)));
+  }, [initialSnapshot]);
 
-  // Update initial reference (after save)
+  // Update initial snapshot (after save)
   const updateInitialRef = useCallback(() => {
-    initialRef.current = JSON.parse(JSON.stringify(formData));
+    setInitialSnapshot(JSON.parse(JSON.stringify(formData)));
   }, [formData]);
 
   // Company handlers
@@ -299,7 +312,7 @@ export function useOrderForm(initialData?: InitialOrderData) {
   const addLineItem = useCallback((item: Omit<OrderLineItem, 'id' | 'discountCents' | 'totalCents'>) => {
     setFormData((prev) => {
       const existingIndex = prev.lineItems.findIndex(
-        (li) => li.shopifyVariantId === item.shopifyVariantId && !li.isFreeItem
+        (li) => li.shopifyVariantId === item.shopifyVariantId && !isFreeLineItem(li)
       );
 
       let newLineItems: OrderLineItem[];
@@ -430,7 +443,7 @@ export function useOrderForm(initialData?: InitialOrderData) {
     orderDiscountCents: number
   ) => {
     setFormData((prev) => {
-      const regularItems = lineItems.filter((item) => !item.isFreeItem);
+      const regularItems = lineItems.filter((item) => !isFreeLineItem(item));
 
       // Gross subtotal (before any discounts)
       const grossSubtotalCents = regularItems.reduce(

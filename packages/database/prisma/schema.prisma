@@ -94,6 +94,8 @@ model Shop {
   promotions      Promotion[]
   quotas          RepQuota[]
   billingPeriods  BillingPeriod[]
+  billingEvents   BillingEvent[]
+  queueJobs       QueueJob[]
   catalogs        Catalog[]
   leadFormFields  LeadFormField[]
   leads           Lead[]
@@ -565,6 +567,12 @@ model Order {
   shopifyInvoiceId    String?      @map("shopify_invoice_id") // If invoice sent instead of card charge
   paidAt              DateTime?    @map("paid_at")
 
+  // Money in/out totals — denormalized from BillingEvent ledger.
+  // Maintained by recordBillingEvent(); always equal to the sum of matching
+  // BillingEvent rows for this order. Net = paidAmountCents - refundedAmountCents.
+  paidAmountCents     Int          @default(0) @map("paid_amount_cents")
+  refundedAmountCents Int          @default(0) @map("refunded_amount_cents")
+
   // Timestamps
   placedAt            DateTime?    @map("placed_at")
   cancelledAt         DateTime?    @map("cancelled_at")
@@ -587,6 +595,7 @@ model Order {
   shippingMethod   ShippingMethod?  @relation(fields: [shippingMethodId], references: [id])
   lineItems        OrderLineItem[]
   billedOrder      BilledOrder?
+  billingEvents    BillingEvent[]
   timelineEvents   OrderTimelineEvent[]
 
   @@unique([shopId, orderNumber])
@@ -874,8 +883,9 @@ model BillingPeriod {
   updatedAt            DateTime    @updatedAt @map("updated_at")
 
   // Relations
-  shop   Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shop   Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
   orders BilledOrder[]
+  events BillingEvent[]
 
   @@unique([shopId, periodStart])
   @@index([shopId, status])
@@ -896,6 +906,47 @@ model BilledOrder {
 
   @@index([billingPeriodId])
   @@map("billed_orders")
+}
+
+/// Append-only ledger of money-in / money-out events captured from Shopify
+/// webhooks. The monthly billing cron aggregates these to compute usage
+/// charges, and tags each event with the BillingPeriod it was billed in for
+/// audit trail. Reconciliation pass at cycle close ensures no Order with
+/// paidAt/refundedAt in the period is missing an event.
+model BillingEvent {
+  id                   String           @id @default(cuid())
+  shopId               String           @map("shop_id")
+  orderId              String?          @map("order_id")              // null for manual adjustments
+  type                 BillingEventType
+  amountCents          Int              @map("amount_cents")          // always positive; type drives sign
+  occurredAt           DateTime         @map("occurred_at")           // when Shopify recorded the event
+  source               String                                          // webhook topic or "manual" / "reconciliation"
+
+  // Audit: which billing cycle did this end up in?
+  billingPeriodId      String?          @map("billing_period_id")
+  shopifyUsageRecordId String?          @map("shopify_usage_record_id")
+  reportedAt           DateTime?        @map("reported_at")
+
+  createdAt            DateTime         @default(now()) @map("created_at")
+
+  // Relations
+  shop          Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  order         Order?         @relation(fields: [orderId], references: [id])
+  billingPeriod BillingPeriod? @relation(fields: [billingPeriodId], references: [id])
+
+  // Idempotency: a given (shop, order, type, occurredAt) only ever produces
+  // one event row, even if the webhook is retried.
+  @@unique([shopId, orderId, type, occurredAt])
+  @@index([shopId, occurredAt])
+  @@index([shopId, reportedAt])
+  @@index([billingPeriodId])
+  @@map("billing_events")
+}
+
+enum BillingEventType {
+  PAID
+  REFUNDED
+  ADJUSTMENT
 }
 
 // ============================================
@@ -965,4 +1016,51 @@ model Lead {
   @@index([shopId, status])
   @@index([shopId, submittedAt])
   @@map("leads")
+}
+
+/// Generic background-job queue. Acts as the persistent record for any work
+/// that should run async with retries — webhooks, outbound API calls, file
+/// imports, scheduled actions. The processing engine is BullMQ on Redis;
+/// this table is the audit + dedup + replay layer.
+///
+/// Idempotency is enforced at the receive boundary via the
+/// (kind, topic, idempotencyKey) unique index. Pass a key when you have a
+/// natural one (Shopify event id, request hash, batch id); leave null for
+/// always-create-new ad-hoc jobs.
+model QueueJob {
+  id             String         @id @default(cuid())
+  kind           QueueJobKind
+  topic          String                                            // sub-category within a kind
+  shopId         String?        @map("shop_id")
+  idempotencyKey String?        @map("idempotency_key")
+  payload        Json
+  status         QueueJobStatus @default(QUEUED)
+  attempts       Int            @default(0)
+  lastError      String?        @map("last_error")
+  source         String?                                            // who enqueued: webhook topic, route name, etc.
+  receivedAt     DateTime       @default(now()) @map("received_at")
+  startedAt      DateTime?      @map("started_at")
+  processedAt    DateTime?      @map("processed_at")
+
+  shop Shop? @relation(fields: [shopId], references: [id], onDelete: Cascade)
+
+  @@unique([kind, topic, idempotencyKey])
+  @@index([status, receivedAt])
+  @@index([shopId, kind, status])
+  @@index([kind, status])
+  @@map("queue_jobs")
+}
+
+enum QueueJobKind {
+  WEBHOOK     // Inbound Shopify webhooks (orders/paid, refunds/create, etc.)
+  API         // Outbound API calls that should retry (Shopify GraphQL, third-party APIs)
+  FILE_IMPORT // Bulk import jobs from uploaded files (CSV, XLSX, etc.)
+  ACTION      // Scheduled or admin-triggered work (cron jobs, sync actions, etc.)
+}
+
+enum QueueJobStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
 }

@@ -1,7 +1,11 @@
 'use client';
 
 import { ProductPicker, type SelectedProduct } from '../pickers/ProductPicker';
-import type { OrderLineItem } from '@/hooks/useOrderForm';
+import {
+  isFreeLineItem,
+  isDiscountedLineItem,
+  type OrderLineItem,
+} from '@/hooks/useOrderForm';
 
 interface ProductsSectionProps {
   lineItems: OrderLineItem[];
@@ -54,7 +58,7 @@ export function ProductsSection({
 
   return (
     <div className="card">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-2">
         <h2 className="font-semibold text-gray-900">Products</h2>
         {!readonly && (
           <ProductPicker
@@ -66,7 +70,7 @@ export function ProductsSection({
       </div>
 
       {lineItems.length === 0 ? (
-        <div className="text-center py-8 bg-gray-50 rounded-lg">
+        <div className="text-center py-8 rounded-lg">
           <svg
             className="w-12 h-12 mx-auto text-gray-300 mb-3"
             fill="none"
@@ -88,22 +92,23 @@ export function ProductsSection({
           )}
         </div>
       ) : (
-        <div className="space-y-3">
+        <ul className="divide-y divide-gray-100">
           {sortedItems.map((item) => {
-            const isFree = item.isFreeItem || item.totalCents === 0;
+            const isFree = isFreeLineItem(item);
+            const isDiscounted = isDiscountedLineItem(item);
+            const hasPromo = isFree || isDiscounted;
+            const grossCents = item.unitPriceCents * item.quantity;
 
             return (
-              <div
+              <li
                 key={item.id}
-                className={`flex gap-3 p-3 rounded-lg ${
-                  isFree
-                    ? 'bg-green-50 border border-green-100'
-                    : 'bg-gray-50'
+                className={`flex gap-3 py-3 first:pt-1 last:pb-1 ${
+                  isFree ? '-mx-2 px-2 rounded-lg bg-green-50' : ''
                 }`}
               >
                 {/* Product Image */}
                 <div className={`w-16 h-16 rounded-lg overflow-hidden flex-shrink-0 ${
-                  isFree ? 'bg-green-100' : 'bg-gray-200'
+                  isFree ? 'bg-green-100' : 'bg-gray-100'
                 }`}>
                   {item.imageUrl ? (
                     <img
@@ -147,7 +152,7 @@ export function ProductsSection({
                   {item.variantTitle && (
                     <p className="text-sm text-gray-500">{item.variantTitle}</p>
                   )}
-                  {isFree && item.promotionName ? (
+                  {hasPromo && item.promotionName ? (
                     <p className="text-xs text-green-600 mt-1">{item.promotionName}</p>
                   ) : (
                     <p className="text-sm text-primary-600 font-semibold mt-1">
@@ -215,6 +220,15 @@ export function ProductsSection({
                     <span className="bg-green-500 text-white text-xs px-2 py-0.5 rounded font-medium">
                       FREE
                     </span>
+                  ) : isDiscounted ? (
+                    <div className="text-right">
+                      <p className="text-xs text-gray-400 line-through">
+                        {formatPrice(grossCents, currency)}
+                      </p>
+                      <p className="text-sm font-semibold text-green-700">
+                        {formatPrice(item.totalCents, currency)}
+                      </p>
+                    </div>
                   ) : (
                     <div className="text-right">
                       <p className="text-sm font-semibold text-gray-900">
@@ -227,10 +241,10 @@ export function ProductsSection({
                     </div>
                   )}
                 </div>
-              </div>
+              </li>
             );
           })}
-        </div>
+        </ul>
       )}
     </div>
   );

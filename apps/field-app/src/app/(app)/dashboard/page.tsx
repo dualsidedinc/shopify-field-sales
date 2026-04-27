@@ -6,6 +6,7 @@ import { ClipboardList, Building2, Clock, ChevronRight } from 'lucide-react';
 import { api } from '@/lib/api';
 import { CompanyList, type CompanyListItemData } from '@/components/lists/CompanyListItem';
 import { OrderList, type OrderListItemData } from '@/components/lists/OrderListItem';
+import { PageHeader } from '@/components/ui';
 
 interface DashboardMetrics {
   ordersThisMonth: number;
@@ -45,42 +46,45 @@ export default function DashboardPage() {
   }, []);
 
   return (
-    <div className="space-y-6">
+    <div>
+      <PageHeader title="Dashboard" />
+
+      <div className="space-y-6">
       {/* KPI Cards */}
       <div className="grid grid-cols-3 gap-3">
-        <div className="card">
-          <div className="flex items-center gap-2 mb-1">
-            <ClipboardList className="w-4 h-4 text-primary-500" />
-            <p className="text-sm text-gray-500">Orders</p>
+        <Link href="/orders" className="card block hover:bg-gray-50 transition-colors">
+          <div className="flex items-center gap-1.5 mb-1">
+            <ClipboardList className="w-4 h-4 shrink-0 text-primary-500" />
+            <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Orders</p>
           </div>
           <p className="text-2xl font-bold text-primary-600">
             {loading ? '--' : data?.metrics.ordersThisMonth || 0}
           </p>
-        </div>
-        <div className="card">
-          <div className="flex items-center gap-2 mb-1">
-            <Building2 className="w-4 h-4 text-primary-500" />
-            <p className="text-sm text-gray-500">Companies</p>
+        </Link>
+        <Link href="/companies" className="card block hover:bg-gray-50 transition-colors">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Building2 className="w-4 h-4 shrink-0 text-primary-500" />
+            <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Companies</p>
           </div>
           <p className="text-2xl font-bold text-primary-600">
             {loading ? '--' : data?.metrics.accountCount || 0}
           </p>
-        </div>
-        <div className="card">
-          <div className="flex items-center gap-2 mb-1">
-            <Clock className="w-4 h-4 text-amber-500" />
-            <p className="text-sm text-gray-500">Pending</p>
+        </Link>
+        <Link href="/orders?status=PENDING" className="card block hover:bg-gray-50 transition-colors">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Clock className="w-4 h-4 shrink-0 text-amber-500" />
+            <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">Pending</p>
           </div>
           <p className="text-2xl font-bold text-amber-600">
             {loading ? '--' : data?.metrics.pendingOrders || 0}
           </p>
-        </div>
+        </Link>
       </div>
 
       {/* Draft Orders - Orders needing action */}
       <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-semibold text-gray-900">Draft Orders</h2>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-xs font-medium uppercase tracking-wide text-gray-500">Draft Orders</h2>
           <Link href="/orders" className="text-sm link flex items-center gap-1">
             View All
             <ChevronRight className="w-4 h-4" />
@@ -98,8 +102,8 @@ export default function DashboardPage() {
       {/* Latest Companies */}
       {!loading && data?.latestCompanies && data.latestCompanies.length > 0 && (
         <section>
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-lg font-semibold text-gray-900">Latest Companies</h2>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-xs font-medium uppercase tracking-wide text-gray-500">Latest Companies</h2>
             <Link href="/companies" className="text-sm link flex items-center gap-1">
               View All
               <ChevronRight className="w-4 h-4" />
@@ -108,6 +112,7 @@ export default function DashboardPage() {
           <CompanyList companies={data.latestCompanies} />
         </section>
       )}
+      </div>
     </div>
   );
 }

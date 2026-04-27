@@ -8,8 +8,10 @@ This is a monorepo containing two applications:
 
 | App | Description | Port | Stack |
 |-----|-------------|------|-------|
-| `shopify-app` | Shopify embedded admin app for merchant configuration | 3000 | React Router, Shopify App Bridge |
-| `field-app` | Mobile-first web app for field sales reps | 3001 | Next.js 16, Tailwind CSS |
+| `shopify-app` | Shopify embedded admin app **and** the authoritative system for all shared business logic | 3000 | React Router, Shopify App Bridge |
+| `field-app` | Mobile-first UI/BFF for sales reps. Owns its own auth + reads; proxies all mutations to shopify-app | 3001 | Next.js 16, Tailwind CSS |
+
+**Important:** field-app does not contain business logic for shared processes. Mutations go to `/api/internal/*` endpoints on shopify-app via the proxy helper. Field-app must never call the Shopify Admin API directly. **See [`docs/architecture.md`](./docs/architecture.md) for the full responsibility split, internal API pattern, auth model, and a checklist for adding new endpoints.**
 
 Both apps share:
 - A PostgreSQL database (same schema, multi-tenant by `shopId`)
@@ -19,10 +21,12 @@ Both apps share:
 ```
 field-sales-manager/
 ├── apps/
-│   ├── shopify-app/     # Shopify embedded app
-│   └── field-app/       # Field sales rep app
+│   ├── shopify-app/     # Shopify embedded app + business logic owner
+│   └── field-app/       # Field sales rep UI + BFF
 ├── packages/
 │   └── shared/          # Shared types and utilities
+├── docs/
+│   └── architecture.md  # Cross-app responsibility model — read this first
 ├── render.yaml          # Render deployment config
 └── package.json         # Workspace root
 ```
@@ -112,12 +116,20 @@ DATABASE_URL="postgresql://postgres:postgres@localhost:5432/field_sales_manager?
 # Redis
 REDIS_URL="redis://localhost:6379"
 
-# Authentication
+# Authentication (field-app rep sessions)
 JWT_SECRET="your-random-secret-minimum-32-characters"
 JWT_EXPIRES_IN="1h"
 REFRESH_TOKEN_EXPIRES_IN="7d"
 
+# Cross-app proxy — must match the value set in apps/shopify-app
+APP_SECRET="shared-secret-also-set-in-shopify-app"
+
+# Where field-app proxies mutations. In dev, this is shopify-app's local URL.
+# In prod on Render, prefer the private internal hostname (e.g. http://field-sales-shopify-app:3000)
+SHOPIFY_APP_URL="http://localhost:3000"
 ```
+
+> The same `APP_SECRET` must be set on `apps/shopify-app` — that's how `requireInternalAuth` validates that incoming `/api/internal/*` requests are coming from field-app.
 
 ### 5. Initialize Database
 
@@ -204,19 +216,15 @@ Both apps share the same database with these core models:
 - Apply promotions automatically
 - Track order history
 
-## API Endpoints (Field App)
+## API surface
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/auth/login` | POST | Authenticate sales rep |
-| `/api/auth/refresh` | POST | Refresh JWT token |
-| `/api/dashboard` | GET | Dashboard metrics |
-| `/api/accounts` | GET | List companies |
-| `/api/accounts/[id]` | GET | Company details |
-| `/api/products` | GET | Product catalog |
-| `/api/cart` | GET/POST/PATCH/DELETE | Cart operations |
-| `/api/orders` | GET/POST | Order list/create |
-| `/api/orders/[id]` | GET | Order details |
+Field-app exposes the API the rep UI consumes. Each route is one of three things:
+
+- **Read** — direct DB query (lives in field-app).
+- **Proxy** — forwards to `/api/internal/<resource>` on shopify-app via `proxyToShopifyApp`.
+- **Field-app-only concern** — auth, OTP, cart sessions (no shared business state).
+
+Full responsibility split, the proxy/internal-auth helpers, and the list of `/api/internal/*` endpoints live in [`docs/architecture.md`](./docs/architecture.md). When adding a new endpoint, follow the checklist in that doc.
 
 ## Webhooks
 
@@ -254,7 +262,10 @@ This monorepo is configured for Render deployment using a Blueprint (`render.yam
 |----------|---------|-------------|
 | `SHOPIFY_API_KEY` | shopify-app | From Shopify Partner Dashboard |
 | `SHOPIFY_API_SECRET` | shopify-app | From Shopify Partner Dashboard |
-| `SHOPIFY_APP_URL` | shopify-app | Your Render service URL |
+| `SHOPIFY_APP_URL` | shopify-app | Your shopify-app Render public URL (used by Shopify webhooks/embedded admin) |
+| `APP_SECRET` | **both** services (same value) | Shared secret authenticating field-app→shopify-app proxy calls |
+| `SHOPIFY_APP_URL` | **field-app** | Where field-app proxies mutations. Use the **private** internal hostname (e.g. `http://field-sales-shopify-app:3000`) so traffic stays inside Render's private network |
+| `JWT_SECRET` | field-app | Rep session signing |
 
 5. Click **Apply** to deploy
 

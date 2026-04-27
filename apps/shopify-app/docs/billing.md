@@ -106,89 +106,165 @@ When changing plans mid-cycle:
 
 ## Usage Reporting
 
-Usage is reported **daily** via a batch process, not in real-time. This approach:
-- Handles high volume (thousands of orders/month)
-- Reduces API calls to Shopify
-- Allows proper netting of refunds
+Usage is reported **monthly** on the 1st of each month for the previous calendar month. The flow:
 
-### Daily Batch Process
+1. **Webhooks** (`orders/paid`, `refunds/create`, `orders/updated`) are enqueued to the [job queue](./queue.md) and processed async by the worker, which writes append-only `BillingEvent` rows as money moves.
+2. **Monthly cron** (1st of month at 00:05 UTC) closes the previous calendar month: reconciles missing events, aggregates the ledger, reports a single revenue-share charge + a single prorated extra-rep charge to Shopify, and tags every event with the cycle it was billed in for permanent audit trail.
 
-Runs daily at 00:05 UTC via GitHub Actions:
+> **Source of truth for "is this order paid?":** Shopify, not the app. We only write a `BillingEvent { type: PAID }` when the `orders/paid` webhook fires (or when an admin uses the manual "Mark as Paid" override). Completing a draft order via GraphQL leaves the local order at `PENDING` — see [Orders → Status authority](./orders.md#status-authority--who-flips-what) for the full reasoning.
+
+### BillingEvent ledger
+
+Every monetary event is captured as an immutable row:
+
+```prisma
+model BillingEvent {
+  id                    String           @id @default(cuid())
+  shopId                String
+  orderId               String?          // null for manual adjustments
+  type                  BillingEventType // PAID | REFUNDED | ADJUSTMENT
+  amountCents           Int              // always positive; type drives sign
+  occurredAt            DateTime         // when Shopify recorded the event
+  source                String           // webhook topic or "manual" / "reconciliation"
+
+  // Audit: which billing cycle did this end up in?
+  billingPeriodId       String?
+  shopifyUsageRecordId  String?
+  reportedAt            DateTime?
+}
+```
+
+The unique index `(shopId, orderId, type, occurredAt)` makes webhook handlers idempotent — duplicate Shopify retries are no-ops.
+
+### Monthly cron
 
 ```yaml
-# .github/workflows/daily-billing.yml
+# .github/workflows/monthly-billing.yml
 on:
   schedule:
-    - cron: '5 0 * * *'
+    - cron: '5 0 1 * *'  # 1st of every month at 00:05 UTC
 ```
 
-Triggers `POST /api/cron/billing` which processes all active shops.
+For each shop with an active plan, `reportMonthlyUsageForShop`:
 
-### Revenue Share Calculation
+1. **Determines the period** — previous calendar month, clamped to install date for first-period new installs (so a shop installed on the 15th only pays for days 15→end of month).
+2. **Reconciles** — `reconcileEventsForPeriod` diffs `Order.paidAt`/`refundedAt` against `BillingEvent` rows in the window and creates any missing events. Catches webhook delivery gaps.
+3. **Aggregates** — sums `BillingEvent` rows in the window:
+   ```
+   netRevenue        = sum(PAID) - sum(REFUNDED)
+   revenueShareCents = max(0, round(netRevenue × plan.revenueSharePercent / 100))
+   ```
+4. **Computes prorated extra-rep charges**:
+   ```
+   prorationFactor    = daysInPeriod / daysInFullMonth
+   proratedRepCharge  = extraReps × perRepCents × prorationFactor
+   ```
+5. **Reports to Shopify** — one revenue-share record + one extra-rep record, with idempotency keys `revenue-${shopId}-${YYYY-MM}` and `reps-${shopId}-${YYYY-MM}`.
+6. **Tags every event** in the batch with `billingPeriodId` + `shopifyUsageRecordId` + `reportedAt`. This is the audit trail — every event is permanently anchored to a cycle.
+7. **Closes the period** (status `closed`, `finalizedAt` set) and advances `Shop.currentPeriodStart`/`currentPeriodEnd` to the new calendar month.
 
-Net revenue share is calculated as:
+### Mid-month installs
 
-```
-(Orders PAID) - (Orders REFUNDED) = Net Revenue
-Net Revenue × Revenue Share % = Daily Charge
-```
+The first cycle is partial. A shop installed on **April 15**:
+
+- `BillingPeriod`: `periodStart = Apr 15`, `periodEnd = Apr 30 23:59:59`.
+- Revenue share: events with `occurredAt >= Apr 15` only (automatic — no earlier events exist).
+- Extra-rep proration: `extraReps × perRepCents × (16 / 30)`.
+- Base monthly fee: Shopify's billing API prorates this automatically.
+- May 1 cron fires: closes April, opens May (`May 1 → May 31`), reports April's net to Shopify.
+
+After the first partial period, every cycle is a full calendar month.
+
+### Reconciliation guarantee
+
+Even if a webhook delivery fails:
 
 ```typescript
-const paidTotal = paidOrders.reduce((sum, o) => sum + o.totalCents, 0);
-const refundedTotal = refundedOrders.reduce((sum, o) => sum + o.totalCents, 0);
-const netRevenueCents = paidTotal - refundedTotal;
-const revenueShareCents = Math.max(0, Math.round(
-  netRevenueCents * (planConfig.revenueSharePercent / 100)
-));
+// Inside reportMonthlyUsageForShop, before aggregation
+await reconcileEventsForPeriod(shopId, periodStart, periodEnd);
 ```
 
-Orders are tracked via `revenueShareReportedAt` to prevent double-billing.
+…walks every `Order` with `paidAt` or `refundedAt` in the window and creates any missing `BillingEvent` rows from order data. So the canonical event ledger always matches reality at cycle close.
 
-### Extra Rep Charges (Prorated)
+### Backfill
 
-Extra reps beyond the included count are charged with proration based on days remaining in the billing period:
+For an existing deployment moving to the ledger model:
 
 ```typescript
-// Calculate prorated charge
-const daysRemaining = Math.ceil((periodEnd - now) / msPerDay);
-const prorationFactor = Math.min(1, daysRemaining / 30);
-const proratedCharge = fullCharge × prorationFactor;
+import { backfillBillingEventsFromOrders } from "./services/billing.server";
+
+await backfillBillingEventsFromOrders();          // all shops
+await backfillBillingEventsFromOrders("shop-id"); // one shop
 ```
 
-Example: If a shop adds 2 extra reps with 15 days left at $10/rep:
-- Full charge: 2 × $10 = $20
-- Proration: 15/30 = 0.5
-- Actual charge: $20 × 0.5 = $10
-
-The `extraRepsCharged` field tracks reps already billed in the current period to prevent duplicate charges.
+Walks every Order with `paidAt`/`refundedAt` and creates events. Idempotent — safe to re-run.
 
 ## Database Schema
 
-### Order Tracking Fields
+### BillingEvent (the canonical ledger)
 
 ```prisma
-model Order {
-  // Revenue share tracking
-  revenueShareReportedAt    DateTime?  // When reported to Shopify
-  revenueShareUsageRecordId String?    // Shopify usage record ID
+model BillingEvent {
+  shopId                String
+  orderId               String?
+  type                  BillingEventType  // PAID | REFUNDED | ADJUSTMENT
+  amountCents           Int
+  occurredAt            DateTime
+  source                String
+
+  billingPeriodId       String?           // set when included in a cycle
+  shopifyUsageRecordId  String?
+  reportedAt            DateTime?
+
+  @@unique([shopId, orderId, type, occurredAt])
 }
 ```
 
-### Billing Period Tracking
+### BillingPeriod (one per shop per calendar month)
 
 ```prisma
 model BillingPeriod {
-  // Extra rep tracking
-  extraRepsCharged Int @default(0)  // Reps already billed this period
+  periodStart       DateTime  // 1st of month, or install date for first period
+  periodEnd         DateTime  // last millisecond of month
 
-  // Accumulated totals
-  activeRepCount    Int?
-  extraRepCount     Int?
+  includedReps      Int
+  activeRepCount    Int @default(0)
+  extraRepCount     Int @default(0)
   repChargesCents   Int @default(0)
-  orderRevenueCents Int @default(0)
+
+  orderRevenueCents Int @default(0)  // net (paid - refunded) for the period
   revenueShareCents Int @default(0)
+
+  status            String    @default("open")  // open | closed
+  finalizedAt       DateTime?
+
+  events            BillingEvent[]  // every event tagged in this cycle
 }
 ```
+
+### Order denormalized totals
+
+`Order` carries running totals that mirror the BillingEvent ledger so the
+order-detail UI can show "Paid: $X / Refunded: $Y / Net: $Z" without
+joining:
+
+```prisma
+model Order {
+  paidAmountCents     Int @default(0)  // sum of PAID events for this order
+  refundedAmountCents Int @default(0)  // sum of REFUNDED events for this order
+  // net = paidAmountCents - refundedAmountCents
+}
+```
+
+Maintained by `recordBillingEvent` — atomically incremented in the same
+transaction as the `BillingEvent` insert. Resyncable from the ledger via
+`recomputeOrderAmountsFromEvents()` if drift is ever suspected.
+
+### Legacy Order tracking fields
+
+`Order.revenueShareReportedAt` and `Order.revenueShareUsageRecordId` predate
+the ledger model and are no longer written to. They can be dropped after the
+old data is verified to be replicated in `BillingEvent`.
 
 ## Key Functions
 
@@ -200,12 +276,18 @@ model BillingPeriod {
 | `getBillingStatus(shopId)` | Current billing status |
 | `hasActiveBilling(shopId)` | Check if subscription active |
 | `createBillingSubscription(...)` | Create Shopify subscription (redirects to approval) |
-| `activateBilling(shopId, subscriptionId, plan)` | Activate after approval |
+| `activateBilling(shopId, subscriptionId, plan)` | Activate after approval — sets `currentPeriodEnd` to month-end |
 | `getCurrentBillingPeriod(shopId)` | Get/create current period |
-| `calculateUsageCharges(shopId)` | Calculate pending charges |
-| `reportDailyUsageForShop(shopId, admin)` | Report daily usage to Shopify |
-| `getShopsForDailyUsageReporting()` | Get shops needing daily reporting |
-| `reportUsageCharge(...)` | Report single usage charge to Shopify |
+| `calculateUsageCharges(shopId)` | Pending charges for the current month (reads `BillingEvent` ledger) |
+| **`recordBillingEvent(...)`** | **Idempotent insert into the BillingEvent ledger — called from webhooks** |
+| **`reconcileEventsForPeriod(...)`** | **Backfill missing events from `Order` rows for a date window** |
+| **`reportMonthlyUsageForShop(shopId, admin, now?)`** | **Close previous month: reconcile, aggregate, report to Shopify, tag events** |
+| **`backfillBillingEventsFromOrders(shopId?)`** | **One-shot migration helper — creates events + resyncs Order amount columns** |
+| **`recomputeOrderAmountsFromEvents(shopId?)`** | **Rebuild `Order.paidAmountCents` / `refundedAmountCents` from the ledger. Idempotent.** |
+| `getCalendarMonthBoundaries(date)` | `{ start, end }` for the calendar month containing `date` |
+| `getPreviousCalendarMonth(date)` | `{ start, end }` for the calendar month before `date` |
+| `getShopsForDailyUsageReporting()` | Shops needing the monthly run (name unchanged for backwards compat) |
+| `reportUsageCharge(...)` | Low-level: report single usage charge to Shopify |
 | `handleSubscriptionUpdate(...)` | Process billing webhook |
 | `cancelBilling(shopId)` | Cancel subscription |
 | `syncUsageLineItemId(admin, shopId)` | Sync usage line item ID from Shopify |
@@ -213,27 +295,39 @@ model BillingPeriod {
 
 ## Webhooks
 
-Register these in `shopify.app.toml`:
+Subscriptions in `shopify.app.toml` that drive billing-relevant flows:
 
 ```toml
 [[webhooks.subscriptions]]
-topics = [ "app_subscriptions/update" ]
-uri = "/webhooks/billing"
-
-[[webhooks.subscriptions]]
-topics = [ "app_subscriptions/approaching_capped_amount" ]
+topics = [ "app_subscriptions/update", "app_subscriptions/approaching_capped_amount" ]
 uri = "/webhooks/billing"
 
 [[webhooks.subscriptions]]
 topics = [ "app/uninstalled" ]
-uri = "/webhooks/billing"
+uri = "/webhooks/app/uninstalled"
+
+[[webhooks.subscriptions]]
+topics = [ "orders/paid", "orders/cancelled", "orders/updated" ]
+uri = "/webhooks/orders"
+
+[[webhooks.subscriptions]]
+topics = [ "refunds/create" ]
+uri = "/webhooks/refunds"
 ```
+
+All five routes enqueue to the [job queue](./queue.md) — they acknowledge
+in <50ms and the worker handles processing. The exception is
+`/webhooks/app/uninstalled` which is **hybrid**: it deletes the OAuth
+session inline (auth-critical) AND enqueues the business-side cleanup
+(`cancelBilling`).
 
 | Topic | Action |
 |-------|--------|
 | `APP_SUBSCRIPTIONS_UPDATE` | Update billing status (ACTIVE, FROZEN, CANCELLED), handle period transitions |
-| `APP_SUBSCRIPTIONS_APPROACHING_CAPPED_AMOUNT` | Warning when near 90% of usage cap |
+| `APP_SUBSCRIPTIONS_APPROACHING_CAPPED_AMOUNT` | Warning when near 90% of usage cap (currently logs only — TODO: notify merchant + auto-bump) |
 | `APP_UNINSTALLED` | Cancel billing |
+| `ORDERS_PAID` / `ORDERS_UPDATED` (paid transition) | Write `BillingEvent { type: PAID }` |
+| `REFUNDS_CREATE` | Write `BillingEvent { type: REFUNDED }` |
 
 > **Note**: `subscription_billing_attempts/*` webhooks are for **merchant subscription contracts** (subscription products sold to customers), not app billing. They require `read_own_subscription_contracts` scope with partner approval. For app billing, subscription status changes (including payment failures) come through `APP_SUBSCRIPTIONS_UPDATE` with status `FROZEN`.
 
@@ -322,6 +416,40 @@ if (status.requiresBilling) {
 }
 ```
 
+### Trial Expiration Handling
+
+When a trial expires, the shop is treated as a **new subscription** if they select a plan. This means:
+- Expired trials get a fresh 7-day trial period
+- This ensures shops that let their trial lapse can re-engage
+
+```typescript
+// In activateBilling()
+const trialExpired = shop.billingStatus === "TRIAL" && shop.trialEndsAt && now > shop.trialEndsAt;
+const isNewSubscription = shop.billingStatus === "INACTIVE" || shop.billingStatus === "CANCELLED" || trialExpired;
+```
+
+### Trial Extension Prevention
+
+**Important**: Active trials cannot be extended by changing plans. This prevents abuse where shops could perpetually extend their trial by switching between plans.
+
+When a shop changes plans during an active trial:
+- The existing `trialEndsAt` date is preserved
+- Only the plan configuration changes (pricing, included reps, etc.)
+- The billing period is updated with new plan settings
+
+```typescript
+if (isNewSubscription) {
+  // New subscription: set new trial period
+  trialEndsAt = new Date(now);
+  trialEndsAt.setDate(trialEndsAt.getDate() + TRIAL_DAYS);
+  billingStatus = "TRIAL";
+} else {
+  // Plan change: keep existing status and trial end date
+  // trialEndsAt is NOT set here - existing date preserved
+  billingStatus = shop.billingStatus === "TRIAL" ? "TRIAL" : "ACTIVE";
+}
+```
+
 ## Custom App Distributions (Bypass Shopify Billing)
 
 For custom app distributions where billing is handled outside Shopify (e.g., direct contracts with enterprise clients), you can bypass the Shopify Billing API while still tracking usage locally.
@@ -404,8 +532,35 @@ For the daily billing GitHub Action:
 # .env
 APP_SECRET=your-secret-key-here
 
+# App handle for billing callback URLs (must match Partner Dashboard)
+# Production: field-sales-manager
+# Development: field-sales-manager-dev
+SHOPIFY_APP_HANDLE=field-sales-manager
+
 # Optional: For custom distributions only
 # BYPASS_SHOPIFY_BILLING=true
+```
+
+### App Handle Configuration
+
+The `SHOPIFY_APP_HANDLE` environment variable is **critical** for billing callbacks to work correctly in embedded apps.
+
+When a merchant approves a subscription, Shopify redirects back to:
+```
+https://admin.shopify.com/store/{store}/apps/{app-handle}/app/billing/callback?plan={plan}
+```
+
+The app handle must match what's configured in the Partner Dashboard. Common values:
+- **Production**: `field-sales-manager`
+- **Development**: `field-sales-manager-dev`
+
+If the handle is wrong, users will see a 404 error after approving billing.
+
+```typescript
+// app.billing.subscribe.tsx
+const storeName = session.shop.replace(".myshopify.com", "");
+const appHandle = process.env.SHOPIFY_APP_HANDLE || "field-sales-manager";
+const returnUrl = `https://admin.shopify.com/store/${storeName}/apps/${appHandle}/app/billing/callback?plan=${plan}`;
 ```
 
 ## Testing

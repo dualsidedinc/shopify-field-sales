@@ -31,6 +31,42 @@ services:
         value: read_products,write_products,read_orders,write_orders,read_customers,read_companies
       - key: SHOPIFY_APP_URL
         sync: false
+      - key: APP_SECRET
+        sync: false
+
+  # Background queue worker — consumes BullMQ jobs from Redis and dispatches
+  # to handlers (webhook processors, API retries, file imports, scheduled
+  # actions). Same codebase as shopify-app, different start command. Scale
+  # this service independently as queue depth grows.
+  - type: worker
+    name: field-sales-queue-worker
+    runtime: node
+    region: oregon
+    plan: starter
+    buildCommand: npm install && npm run build --workspace=apps/shopify-app && npm run setup --workspace=apps/shopify-app
+    startCommand: npm run worker --workspace=apps/shopify-app
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: field-sales-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: field-sales-redis
+          type: redis
+          property: connectionString
+      - key: SHOPIFY_API_KEY
+        sync: false
+      - key: SHOPIFY_API_SECRET
+        sync: false
+      - key: SCOPES
+        value: read_products,write_products,read_orders,write_orders,read_customers,read_companies
+      - key: SHOPIFY_APP_URL
+        sync: false
+      - key: APP_SECRET
+        sync: false
 
   # Field Sales App (Next.js)
   - type: web

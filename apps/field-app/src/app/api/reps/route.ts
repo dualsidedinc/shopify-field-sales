@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { Prisma } from '@field-sales/database';
 import { prisma } from '@/lib/db/prisma';
-import { requireRole } from '@/lib/auth';
-import { hashPassword } from '@/lib/auth';
+import { getAuthContext, requireRole, hashPassword } from '@/lib/auth';
+import { proxyToShopifyApp } from '@/services/shopifyAppClient';
 import type {
   ApiError,
   SalesRepListItem,
@@ -10,6 +10,9 @@ import type {
   PaginatedResponse,
 } from '@/types';
 
+/**
+ * GET /api/reps — list reps. Read-only DB query stays in field-app.
+ */
 export async function GET(request: Request) {
   try {
     const { shopId } = await requireRole('ADMIN', 'MANAGER');
@@ -41,12 +44,7 @@ export async function GET(request: Request) {
         take: pageSize,
         orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
         include: {
-          _count: {
-            select: {
-              repTerritories: true,
-              assignedCompanies: true,
-            },
-          },
+          _count: { select: { repTerritories: true, assignedCompanies: true } },
         },
       }),
       prisma.salesRep.count({ where }),
@@ -64,7 +62,6 @@ export async function GET(request: Request) {
     }));
 
     const totalPages = Math.ceil(totalItems / pageSize);
-
     const response: PaginatedResponse<SalesRepListItem> = {
       items,
       pagination: {
@@ -93,79 +90,27 @@ export async function GET(request: Request) {
   }
 }
 
+/**
+ * POST /api/reps — proxy to shopify-app. Field-app hashes the password
+ * before forwarding so bcryptjs stays out of shopify-app.
+ */
 export async function POST(request: Request) {
-  try {
-    const { shopId } = await requireRole('ADMIN');
-    const body = (await request.json()) as CreateSalesRepRequest;
+  const auth = await getAuthContext();
+  const body = (await request.json().catch(() => ({}))) as CreateSalesRepRequest;
 
-    // Validate required fields
-    if (!body.email?.trim() || !body.firstName?.trim() || !body.lastName?.trim()) {
-      return NextResponse.json<ApiError>(
-        { data: null, error: { code: 'VALIDATION_ERROR', message: 'Email, first name, and last name are required' } },
-        { status: 400 }
-      );
-    }
-
-    if (!body.password || body.password.length < 8) {
-      return NextResponse.json<ApiError>(
-        { data: null, error: { code: 'VALIDATION_ERROR', message: 'Password must be at least 8 characters' } },
-        { status: 400 }
-      );
-    }
-
-    // Check for duplicate email
-    const existing = await prisma.salesRep.findFirst({
-      where: {
-        shopId,
-        email: { equals: body.email.toLowerCase(), mode: 'insensitive' },
-      },
-    });
-
-    if (existing) {
-      return NextResponse.json<ApiError>(
-        { data: null, error: { code: 'CONFLICT', message: 'A rep with this email already exists' } },
-        { status: 409 }
-      );
-    }
-
-    const passwordHash = await hashPassword(body.password);
-
-    const rep = await prisma.salesRep.create({
-      data: {
-        shopId,
-        email: body.email.toLowerCase().trim(),
-        firstName: body.firstName.trim(),
-        lastName: body.lastName.trim(),
-        phone: body.phone?.trim() || null,
-        role: body.role || 'REP',
-        passwordHash,
-        isActive: true,
-      },
-    });
-
-    const result: SalesRepListItem = {
-      id: rep.id,
-      email: rep.email,
-      firstName: rep.firstName,
-      lastName: rep.lastName,
-      role: rep.role,
-      isActive: rep.isActive,
-      territoryCount: 0,
-      companyCount: 0,
-    };
-
-    return NextResponse.json({ data: result, error: null }, { status: 201 });
-  } catch (error) {
-    console.error('Error creating rep:', error);
-    if (error instanceof Error && error.message.includes('Access denied')) {
-      return NextResponse.json<ApiError>(
-        { data: null, error: { code: 'FORBIDDEN', message: error.message } },
-        { status: 403 }
-      );
-    }
+  if (!body.password || body.password.length < 8) {
     return NextResponse.json<ApiError>(
-      { data: null, error: { code: 'INTERNAL_ERROR', message: 'Failed to create rep' } },
-      { status: 500 }
+      { data: null, error: { code: 'VALIDATION_ERROR', message: 'Password must be at least 8 characters' } },
+      { status: 400 }
     );
   }
+
+  const passwordHash = await hashPassword(body.password);
+  const { password: _password, ...rest } = body;
+  void _password;
+
+  return proxyToShopifyApp(auth, '/api/internal/reps', {
+    method: 'POST',
+    body: { ...rest, passwordHash },
+  });
 }

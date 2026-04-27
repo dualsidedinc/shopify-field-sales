@@ -19,26 +19,54 @@ Orders are created in field-app and synced to Shopify via this app. The admin ca
                         │
                         ▼ Admin approves
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        SHOPIFY APP                                  │
+│                  SHOPIFY APP — completes draft                      │
 ├─────────────────────────────────────────────────────────────────────┤
-│  PENDING ──────► PAID ──────► REFUNDED                             │
-│  (Invoice        (Payment     (Refund                              │
-│   sent)           received)    processed)                          │
-│      │                                                              │
-│      └──────► CANCELLED                                            │
+│  PENDING                                                            │
+│  (Order placed in Shopify, payment NOT confirmed yet)              │
+└─────────────────────────────────────────────────────────────────────┘
+                        │
+                        ▼ Shopify processes payment
+┌─────────────────────────────────────────────────────────────────────┐
+│              SHOPIFY ──► WEBHOOKS ──► OUR APP MIRRORS               │
+├─────────────────────────────────────────────────────────────────────┤
+│  orders/paid     ──► PAID    + write BillingEvent (PAID)           │
+│  refunds/create  ──► REFUNDED + write BillingEvent (REFUNDED)      │
+│  orders/cancelled──► CANCELLED                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+**Rule of thumb:** the app *initiates* (completes drafts, requests captures) and *mirrors* (updates status when Shopify webhooks fire). It never decides the order is paid on its own — Shopify owns that.
+
 ## Order Status
 
-| Status | Description | Editable |
-|--------|-------------|----------|
-| `DRAFT` | Being edited by sales rep | Yes (field-app) |
-| `AWAITING_REVIEW` | Submitted for admin approval | Yes (shopify-app only) |
-| `PENDING` | Synced to Shopify, awaiting payment | No |
-| `PAID` | Payment received | No |
-| `CANCELLED` | Order cancelled | No |
-| `REFUNDED` | Payment refunded | No |
+| Status | Description | Editable | Set by |
+|--------|-------------|----------|--------|
+| `DRAFT` | Being edited by sales rep | Yes (field-app) | Field-app create / discard |
+| `AWAITING_REVIEW` | Submitted for admin approval | Yes (shopify-app only) | Rep submit |
+| `PENDING` | Placed in Shopify, payment **not yet confirmed** | No | App after `DRAFT_ORDER_COMPLETE` |
+| `PAID` | Payment confirmed by Shopify | No | **`orders/paid` webhook only** (or manual admin override) |
+| `CANCELLED` | Order cancelled | No | `orders/cancelled` webhook |
+| `REFUNDED` | Payment refunded | No | `orders/updated` webhook (financial_status=refunded) |
+
+### Status authority — who flips what
+
+**Important architectural rule:** Shopify owns the payment state machine. The app **never** sets `Order.status = PAID` directly off the back of a GraphQL call — even when a card capture call returns success, the actual transaction can still fail to settle (insufficient funds, fraud hold, gateway issue). We mirror what Shopify confirms.
+
+The flow when an admin approves an order with a vaulted card:
+
+1. App calls `DRAFT_ORDER_COMPLETE` mutation → Shopify creates the Order, returns the Order ID.
+2. App calls the payment capture mutation → Shopify accepts the request.
+3. App writes locally: `status = PENDING`, `placedAt = now()`, `shopifyOrderId = ...`. **No `paidAt`, no PAID status.**
+4. Shopify processes the actual transaction → fires `orders/paid` webhook when settled.
+5. `processOrderWebhook` (in `order.server.ts`) flips `status = PAID`, sets `paidAt`, and writes a `BillingEvent` for revenue share.
+
+For invoice / NET-terms flows the same shape applies — completing the draft sets `PENDING`; only the eventual `orders/paid` webhook flips to `PAID`.
+
+The single places that flip `status = PAID`:
+- **`processOrderWebhook` ORDERS_PAID handler** — canonical path (Shopify firing the webhook)
+- **`markOrderPaid`** — manual admin override (the "Mark as Paid" button on the order detail page, used for off-platform payments)
+
+Both call `recordBillingEvent` to write the audit row + increment `Order.paidAmountCents`.
 
 ### AWAITING_REVIEW Editing
 
@@ -262,16 +290,34 @@ const numericId = fromGid("gid://shopify/Order/67890"); // "67890"
 
 | Topic | Trigger | Action |
 |-------|---------|--------|
-| `ORDERS_CREATE` | Order created | Link to local order |
-| `ORDERS_PAID` | Payment received | Update status to PAID |
-| `ORDERS_CANCELLED` | Order cancelled | Update status to CANCELLED |
-| `ORDERS_UPDATED` | Order modified | Check for refund status |
+| `ORDERS_PAID` | Payment confirmed by Shopify | Set `status = PAID`, set `paidAt`, write `BillingEvent { type: PAID }`, increment `Order.paidAmountCents` |
+| `ORDERS_CANCELLED` | Order cancelled | Set `status = CANCELLED`, set `cancelledAt` |
+| `ORDERS_UPDATED` | Order modified | If `financial_status = "refunded"`: set `status = REFUNDED` + `refundedAt`. (BillingEvent for the refund comes from `refunds/create` — that's the only signal with the actual refund amount) |
+| `REFUNDS_CREATE` | Refund issued | Sum successful refund transactions → write `BillingEvent { type: REFUNDED }`, increment `Order.refundedAmountCents`. **Skipped if no local Order with matching `shopifyOrderId`** — we don't bill against Shopify-native orders we never billed for in the first place |
 
 ### Draft Order Webhooks
 
 | Topic | Trigger | Action |
 |-------|---------|--------|
-| `DRAFT_ORDERS_UPDATE` | Status change | Link Shopify order when completed |
+| `DRAFT_ORDERS_UPDATE` | Status change to `completed` | Link `shopifyOrderId`, set `status = PENDING` (NOT PAID — `orders/paid` will flip it once payment settles) |
+
+### App-association guarantee
+
+Every webhook handler does a `Order.findFirst({ shopifyOrderId })` lookup before doing anything. Shopify-native orders (placed via storefront, POS, etc.) never have a matching local `Order`, so we silently skip them — neither status flips nor billing events. The app only mirrors state for orders it initiated.
+
+### Async processing via the job queue
+
+Webhook receive routes do **not** process inline. They authenticate the
+webhook, enqueue a `QueueJob` (kind: `WEBHOOK`), and return 200 — sub-50ms
+ack to Shopify regardless of how heavy the downstream work is. A separate
+worker process (Render Worker service) consumes from the BullMQ queue and
+runs the registered handler. See [Queue](./queue.md) for the full model.
+
+What this means for orders specifically:
+- **Receive is fast and reliable** — even if processing is slow or temporarily failing, we always 200 to Shopify so they don't retry.
+- **Per-job retries** — failed handlers get retried with exponential backoff (5 attempts for WEBHOOK kind), independent of Shopify's own webhook retry mechanism.
+- **Idempotency** — the QueueJob unique index `(kind, topic, idempotencyKey=shopify_event_id)` deduplicates Shopify's retry deliveries before they ever reach the worker.
+- **Audit trail** — every webhook ever received is a row in `queue_jobs` until the cleanup cron prunes it 30 days after success.
 
 ### Webhook Processing
 

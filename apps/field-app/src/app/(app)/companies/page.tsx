@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Search } from 'lucide-react';
 import { api } from '@/lib/api';
 import { CompanyList, type CompanyListItemData } from '@/components/lists/CompanyListItem';
+import { PageHeader } from '@/components/ui';
 import type { CompanyListItem, TerritoryListItem } from '@/types';
 
 export default function CompaniesPage() {
@@ -103,34 +104,45 @@ export default function CompaniesPage() {
   }));
 
   return (
-    <div className="space-y-3">
-      {/* Search and Territory Filter */}
-      <div className="flex gap-2">
-        <div className="relative flex-1">
-          <input
-            type="search"
-            placeholder="Search companies..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="input pl-9 h-10 text-sm"
-          />
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+    <div>
+      <PageHeader title="Companies" />
+
+      <div className="space-y-3">
+        {/* Unified toolbar: territory filter + search in a single white shell */}
+        <div className="flex bg-white rounded-lg ring-1 ring-gray-200 overflow-hidden">
+          {territories.length > 0 && (
+            <select
+              value={selectedTerritoryId}
+              onChange={(e) => setSelectedTerritoryId(e.target.value)}
+              aria-label="Filter by territory"
+              className="h-11 text-sm bg-transparent pl-3 pr-8 text-gray-900 font-medium focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500 appearance-none cursor-pointer border-r border-gray-200"
+              style={{
+                backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%236B7280'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`,
+                backgroundRepeat: 'no-repeat',
+                backgroundPosition: 'right 8px center',
+                backgroundSize: '14px',
+              }}
+            >
+              <option value="">All</option>
+              {territories.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          )}
+
+          <div className="relative flex-1 min-w-0">
+            <input
+              type="search"
+              placeholder="Search companies..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full h-11 pl-9 pr-3 text-sm bg-transparent text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500"
+            />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+          </div>
         </div>
-        {territories.length > 0 && (
-          <select
-            value={selectedTerritoryId}
-            onChange={(e) => setSelectedTerritoryId(e.target.value)}
-            className="input h-10 text-sm w-auto min-w-[100px]"
-          >
-            <option value="">All</option>
-            {territories.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
 
       {/* Results count */}
       {!loading && totalCount > 0 && (
@@ -164,6 +176,7 @@ export default function CompaniesPage() {
           {loadingMore ? 'Loading...' : `Load more (${companies.length} of ${totalCount})`}
         </button>
       )}
+      </div>
     </div>
   );
 }

@@ -10,7 +10,7 @@ import {
   type ProductInfo,
 } from '@field-sales/shared';
 import { api } from '@/lib/api';
-import type { OrderLineItem, AppliedPromotion } from './useOrderForm';
+import { isFreeLineItem, type OrderLineItem, type AppliedPromotion } from './useOrderForm';
 
 export interface AvailablePromotion {
   id: string;
@@ -112,8 +112,13 @@ export function usePromotions(config?: UsePromotionsConfig): UsePromotionsResult
   // Evaluate cart against promotions
   const evaluateCart = useCallback(
     (lineItems: OrderLineItem[]) => {
-      // Filter out free items for evaluation
-      const regularItems = lineItems.filter((item) => !item.isFreeItem);
+      // Filter out free items for evaluation — they're engine output, not
+      // user input. Feeding them back in would make the engine treat them as
+      // regular purchases and add ANOTHER free item on top.
+      const regularItems = lineItems.filter((item) => !isFreeLineItem(item));
+      // Preserve ids of already-saved free line items so we can reuse them
+      // instead of generating synthetic `free_...` ids on every re-evaluation.
+      const existingFreeItems = lineItems.filter(isFreeLineItem);
 
       if (regularItems.length === 0 || availablePromotions.length === 0) {
         return {
@@ -167,28 +172,37 @@ export function usePromotions(config?: UsePromotionsConfig): UsePromotionsResult
       let finalLineItems: OrderLineItem[] = [...regularItems];
 
       if (result.freeItemsToAdd.length > 0) {
-        const freeItems: OrderLineItem[] = result.freeItemsToAdd.map((freeItem) => ({
-          id: `free_${freeItem.promotionId}_${freeItem.productId}`,
-          shopifyProductId: freeItem.productId,
-          shopifyVariantId: freeItem.variantId,
-          sku: null,
-          title: freeItem.title,
-          variantTitle: freeItem.variantTitle || null,
-          imageUrl: null,
-          quantity: freeItem.quantity,
-          unitPriceCents: freeItem.unitPriceCents,
-          basePriceCents: freeItem.unitPriceCents,
-          discountCents: freeItem.unitPriceCents * freeItem.quantity,
-          totalCents: 0,
-          isFreeItem: true,
-          promotionId: freeItem.promotionId,
-          promotionName: freeItem.promotionName,
-          // Free items don't have quantity rules
-          quantityMin: null,
-          quantityMax: null,
-          quantityIncrement: null,
-          priceBreaks: [],
-        }));
+        const freeItems: OrderLineItem[] = result.freeItemsToAdd.map((freeItem) => {
+          // Reuse the saved line item if this free gift already exists on the
+          // order (same promotion + variant). Keeps the DB id stable across
+          // re-evaluations so the UI always reflects a real persisted item.
+          const existing = existingFreeItems.find(
+            (li) =>
+              li.promotionId === freeItem.promotionId &&
+              li.shopifyVariantId === freeItem.variantId
+          );
+
+          return {
+            id: existing?.id ?? `free_${freeItem.promotionId}_${freeItem.productId}`,
+            shopifyProductId: freeItem.productId,
+            shopifyVariantId: freeItem.variantId,
+            sku: existing?.sku ?? null,
+            title: freeItem.title,
+            variantTitle: freeItem.variantTitle || null,
+            imageUrl: existing?.imageUrl ?? null,
+            quantity: freeItem.quantity,
+            unitPriceCents: freeItem.unitPriceCents,
+            basePriceCents: freeItem.unitPriceCents,
+            discountCents: freeItem.unitPriceCents * freeItem.quantity,
+            totalCents: 0,
+            promotionId: freeItem.promotionId,
+            promotionName: freeItem.promotionName,
+            quantityMin: null,
+            quantityMax: null,
+            quantityIncrement: null,
+            priceBreaks: [],
+          };
+        });
 
         finalLineItems = [...regularItems, ...freeItems];
       }

@@ -46,11 +46,18 @@
   }
 
   .card {
-    @apply bg-white rounded-xl shadow-md border border-gray-100 p-4;
+    @apply bg-white rounded-xl ring-1 ring-gray-200 p-4;
   }
 
   .card-interactive {
     @apply card active:bg-gray-50 transition-colors;
+  }
+
+  /* Secondary tier: sits "recessed" into the page — used for supporting
+   * metadata sections that should read as less prominent than primary cards.
+   */
+  .card-subdued {
+    @apply bg-gray-50 rounded-xl p-4;
   }
 
   /* Status badges */

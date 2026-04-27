@@ -1,36 +1,21 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
-import { syncCustomerPaymentMethodsWebhook } from "../services/companySync.server";
-
-interface CustomerPaymentMethodPayload {
-  admin_graphql_api_customer_id: string;
-  admin_graphql_api_id: string;
-}
+import { enqueueJob } from "../services/queue/enqueue.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop, payload } = await authenticate.webhook(request);
 
-  console.log(`[Webhook] Received ${topic} for ${shop}`);
+  // Dedup key: use the payment method GID since payloads may not have a numeric `id`.
+  const adminGid = (payload as { admin_graphql_api_id?: string }).admin_graphql_api_id;
+  const idempotencyKey = adminGid ?? null;
 
-  const methodPayload = payload as unknown as CustomerPaymentMethodPayload;
+  await enqueueJob({
+    kind: "WEBHOOK",
+    topic,
+    payload: { shopDomain: shop, topic, payload },
+    idempotencyKey,
+    source: `shopify:${topic}`,
+  });
 
-  // Extract numeric customer ID from GID
-  // Format: "gid://shopify/Customer/123456"
-  const customerGid = methodPayload.admin_graphql_api_customer_id;
-  const shopifyCustomerId = customerGid?.split("/").pop() || "";
-
-  if (!shopifyCustomerId) {
-    console.error(`[Webhook] No customer ID in payment method payload`);
-    return new Response(null, { status: 200 });
-  }
-
-  // Sync payment methods for this customer
-  const result = await syncCustomerPaymentMethodsWebhook(shop, shopifyCustomerId);
-
-  if (!result.success) {
-    console.error(`[Webhook] Failed to sync payment methods:`, result.error);
-  }
-
-  // Always return 200 to acknowledge receipt
   return new Response(null, { status: 200 });
 };

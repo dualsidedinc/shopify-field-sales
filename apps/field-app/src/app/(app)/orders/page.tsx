@@ -2,11 +2,19 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { Search, Plus } from 'lucide-react';
 import { api } from '@/lib/api';
 import { OrderList, type OrderListItemData } from '@/components/lists/OrderListItem';
+import { PageHeader } from '@/components/ui';
+import {
+  ORDER_FILTER_KEYS,
+  ORDER_FILTER_LABELS,
+  filterToStatusParam,
+  type OrderFilterKey,
+} from '@/lib/orderStatus';
 
-type StatusFilter = 'all' | 'DRAFT' | 'AWAITING_REVIEW' | 'PENDING' | 'PAID' | 'REFUNDED';
+type StatusFilter = OrderFilterKey;
 
 interface OrderApiItem {
   id: string;
@@ -15,6 +23,7 @@ interface OrderApiItem {
   shopifyOrderNumber: string | null;
   companyId: string;
   companyName: string;
+  companyAccountNumber: string | null;
   contactName: string | null;
   locationAddress: string | null;
   totalCents: number;
@@ -25,10 +34,16 @@ interface OrderApiItem {
   repName: string;
 }
 
+const VALID_STATUS_FILTERS = ORDER_FILTER_KEYS;
+
 export default function OrdersPage() {
+  const searchParams = useSearchParams();
+  const initialStatus = searchParams.get('status') as StatusFilter | null;
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>(
+    initialStatus && VALID_STATUS_FILTERS.includes(initialStatus) ? initialStatus : 'all'
+  );
   const [orders, setOrders] = useState<OrderApiItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -66,7 +81,7 @@ export default function OrdersPage() {
         page: pageNum,
         pageSize: 30,
         query: debouncedSearch || undefined,
-        status: statusFilter !== 'all' ? statusFilter : undefined,
+        status: filterToStatusParam(statusFilter),
       });
 
       if (data) {
@@ -102,6 +117,7 @@ export default function OrdersPage() {
     orderNumber: o.orderNumber,
     shopifyOrderNumber: o.shopifyOrderNumber,
     companyName: o.companyName,
+    companyAccountNumber: o.companyAccountNumber,
     totalCents: o.totalCents,
     currency: o.currency,
     status: o.status,
@@ -109,53 +125,58 @@ export default function OrdersPage() {
     createdAt: o.createdAt,
   }));
 
-  const filterLabels: Record<StatusFilter, string> = {
-    all: 'All',
-    DRAFT: 'Draft',
-    AWAITING_REVIEW: 'Review',
-    PENDING: 'Pending',
-    PAID: 'Paid',
-    REFUNDED: 'Refunded',
-  };
+  const filterLabels = ORDER_FILTER_LABELS;
 
   return (
-    <div className="space-y-3">
-      {/* Header with search and new order button */}
-      <div className="flex gap-2">
-        <div className="relative flex-1">
-          <input
-            type="search"
-            placeholder="Search orders..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="input pl-9 h-10 text-sm"
-          />
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-        </div>
-        <Link href="/orders/create" className="btn-primary flex items-center gap-1 h-10 px-3">
-          <Plus className="w-4 h-4" />
-          <span className="hidden sm:inline">New</span>
-        </Link>
-      </div>
-
-      {/* Status Filter Pills */}
-      <div className="flex gap-1.5 overflow-x-auto pb-1 -mx-4 px-4 scrollbar-hide">
-        {(['all', 'DRAFT', 'AWAITING_REVIEW', 'PENDING', 'PAID', 'REFUNDED'] as const).map((status) => (
-          <button
-            key={status}
-            onClick={() => setStatusFilter(status)}
-            className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
-              statusFilter === status
-                ? 'bg-primary-600 text-white'
-                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-            }`}
+    <div>
+      <PageHeader
+        title="Orders"
+        action={
+          <Link
+            href="/orders/create"
+            className="inline-flex items-center gap-1.5 h-9 px-3 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 active:bg-gray-100 transition-colors"
           >
-            {filterLabels[status]}
-          </button>
-        ))}
-      </div>
+            <Plus className="w-4 h-4" />
+            Create order
+          </Link>
+        }
+      />
 
-      {/* Results count */}
+      <div className="space-y-3">
+        {/* Unified toolbar: filter + search in a single white shell */}
+        <div className="flex bg-white rounded-lg ring-1 ring-gray-200 overflow-hidden">
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+            aria-label="Filter by status"
+            className="h-11 text-sm bg-transparent pl-3 pr-8 text-gray-900 font-medium focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500 appearance-none cursor-pointer border-r border-gray-200"
+            style={{
+              backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%236B7280'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E")`,
+              backgroundRepeat: 'no-repeat',
+              backgroundPosition: 'right 8px center',
+              backgroundSize: '14px',
+            }}
+          >
+            {ORDER_FILTER_KEYS.map((status) => (
+              <option key={status} value={status}>
+                {filterLabels[status]}
+              </option>
+            ))}
+          </select>
+
+          <div className="relative flex-1 min-w-0">
+            <input
+              type="search"
+              placeholder="Search orders..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full h-11 pl-9 pr-3 text-sm bg-transparent text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500"
+            />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+          </div>
+        </div>
+
+        {/* Results count */}
       {!loading && totalCount > 0 && (
         <p className="text-xs text-gray-500 px-1">
           {totalCount} order{totalCount !== 1 ? 's' : ''}
@@ -175,16 +196,17 @@ export default function OrdersPage() {
         }
       />
 
-      {/* Load More */}
-      {hasMore && !loading && (
-        <button
-          onClick={loadMore}
-          disabled={loadingMore}
-          className="btn-secondary w-full text-sm py-2"
-        >
-          {loadingMore ? 'Loading...' : `Load more (${orders.length} of ${totalCount})`}
-        </button>
-      )}
+        {/* Load More */}
+        {hasMore && !loading && (
+          <button
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="btn-secondary w-full text-sm py-2"
+          >
+            {loadingMore ? 'Loading...' : `Load more (${orders.length} of ${totalCount})`}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

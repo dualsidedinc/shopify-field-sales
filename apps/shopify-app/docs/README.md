@@ -16,6 +16,7 @@ This app runs inside the Shopify Admin and handles:
 
 | Document | Description |
 |----------|-------------|
+| **[Architecture](../../../docs/architecture.md)** | **Cross-app responsibility split + internal API pattern — read first** |
 | [Orders](./orders.md) | Order lifecycle, payment terms, vaulted cards, webhooks |
 | [OrderForm](./order-form.md) | Order creation/edit form with payment selection |
 | [Promotions](./promotions.md) | Promotion types, scopes, real-time evaluation |
@@ -26,6 +27,7 @@ This app runs inside the Shopify Admin and handles:
 | [Leads](./leads.md) | Public lead capture form, form builder, Google Places |
 | [Sales Reps](./sales-reps.md) | Rep management, territory access |
 | [Billing](./billing.md) | App subscription plans, usage tracking |
+| **[Queue](./queue.md)** | **Generic background job queue (webhooks, API calls, imports, scheduled actions)** |
 
 ## Architecture
 
@@ -38,13 +40,17 @@ This app runs inside the Shopify Admin and handles:
 ### Key Directories
 ```
 app/
-├── routes/              # React Router route files
-│   ├── app.*.tsx       # Authenticated app routes
-│   └── webhooks.*.tsx  # Webhook handlers
-├── services/           # Business logic
-├── components/         # Shared components
-├── db.server.ts        # Prisma client
-└── shopify.server.ts   # Shopify auth configuration
+├── routes/                       # React Router route files
+│   ├── app.*.tsx                # Embedded admin UI routes
+│   ├── api.internal.*.tsx       # Internal API for field-app proxy calls
+│   ├── api.cron.*.tsx           # Scheduled jobs
+│   └── webhooks.*.tsx           # Shopify webhook handlers
+├── services/                     # Business logic (shared by UI and internal API)
+├── lib/
+│   └── internal-auth.server.ts  # Validates field-app proxy requests
+├── components/                   # Shared components
+├── db.server.ts                  # Prisma client
+└── shopify.server.ts             # Shopify auth configuration
 ```
 
 ### Shopify Integration
@@ -54,6 +60,10 @@ This app is the **only** component that interacts with Shopify APIs:
 - Webhooks for real-time updates
 - Billing API for subscriptions
 
+### Internal API (field-app proxy target)
+
+Field-app proxies all mutations to `/api/internal/*` routes here. Each one validates the shared `APP_SECRET` + rep identity headers via `requireInternalAuth`. See [`docs/architecture.md`](../../../docs/architecture.md) for the full pattern.
+
 ### Database
 - Shared PostgreSQL with field-app
 - Standard Prisma client: `@prisma/client`
@@ -62,6 +72,8 @@ This app is the **only** component that interacts with Shopify APIs:
 ## Quick Reference
 
 ### Routes
+
+**Embedded admin UI** (`authenticate.admin`):
 - `app._index.tsx` - Dashboard
 - `app.reps.*` - Sales rep management
 - `app.territories.*` - Territory management
@@ -70,7 +82,19 @@ This app is the **only** component that interacts with Shopify APIs:
 - `app.products.*` - Product configuration
 - `app.leads.*` - Lead capture and form builder
 - `app.billing.*` - Billing management
+
+**Internal API for field-app** (`requireInternalAuth`):
+- `api.internal.orders.*` - create/replace/delete + submit/approve/decline/comments
+- `api.internal.tax.calculate` - Shopify draftOrderCalculate
+- `api.internal.reps.*` - rep CRUD + territory assignment
+- `api.internal.territories.*` - territory CRUD
+- `api.internal.companies.*` - company CRUD + contacts + payment-methods
+- `api.internal.profile` - rep self-update
+
+**Other:**
 - `proxy.lead-form.tsx` - Public lead form (App Proxy)
+- `webhooks.*` - Shopify webhook handlers
+- `api.cron.*` - Scheduled jobs (cron secret auth)
 
 ### Services
 | Service | Purpose |

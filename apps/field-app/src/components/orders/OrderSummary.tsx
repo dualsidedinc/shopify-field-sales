@@ -1,6 +1,6 @@
 'use client';
 
-import type { AppliedPromotion, ShippingOption, OrderLineItem } from '@/hooks/useOrderForm';
+import { isFreeLineItem, type AppliedPromotion, type ShippingOption, type OrderLineItem } from '@/hooks/useOrderForm';
 
 interface OrderSummaryProps {
   lineItems: OrderLineItem[];
@@ -41,8 +41,8 @@ export function OrderSummary({
   isCalculatingTax = false,
 }: OrderSummaryProps) {
   // Count only regular items (not free items)
-  const regularItems = lineItems.filter((item) => !item.isFreeItem);
-  const freeItems = lineItems.filter((item) => item.isFreeItem);
+  const regularItems = lineItems.filter((item) => !isFreeLineItem(item));
+  const freeItems = lineItems.filter(isFreeLineItem);
   const itemCount = regularItems.reduce((sum, item) => sum + item.quantity, 0);
 
   // Separate promotions by type for display
@@ -146,7 +146,7 @@ export function OrderSummary({
         </div>
 
         {/* Total */}
-        <div className="pt-3 border-t-2 border-gray-200">
+        <div className="pt-3 border-t border-gray-200">
           <div className="flex justify-between items-center">
             <span className="text-lg font-semibold text-gray-900">Total Due</span>
             <span className="text-lg font-bold text-gray-900">

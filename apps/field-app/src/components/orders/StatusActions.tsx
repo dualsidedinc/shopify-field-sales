@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { OrderStatus } from '@field-sales/database';
 import { BottomSheet } from '../ui/BottomSheet';
+import { getOrderStatusLabel } from '@/lib/orderStatus';
 
 interface StatusActionsProps {
   status: OrderStatus;
@@ -15,23 +16,23 @@ interface StatusActionsProps {
   onDelete?: () => void;
 }
 
-// Status badge helper
+// Status badge helper — colors live here; label text comes from the shared helper.
 function getStatusBadge(status: OrderStatus): { color: string; label: string } {
+  const label = getOrderStatusLabel(status);
   switch (status) {
     case 'DRAFT':
-      return { color: 'bg-gray-100 text-gray-700', label: 'Draft' };
+      return { color: 'bg-gray-100 text-gray-700', label };
     case 'AWAITING_REVIEW':
-      return { color: 'bg-yellow-100 text-yellow-700', label: 'Awaiting Review' };
+      return { color: 'bg-yellow-100 text-yellow-700', label };
     case 'PENDING':
-      return { color: 'bg-blue-100 text-blue-700', label: 'Pending Payment' };
+      return { color: 'bg-blue-100 text-blue-700', label };
     case 'PAID':
-      return { color: 'bg-green-100 text-green-700', label: 'Paid' };
+      return { color: 'bg-green-100 text-green-700', label };
     case 'CANCELLED':
-      return { color: 'bg-red-100 text-red-700', label: 'Cancelled' };
     case 'REFUNDED':
-      return { color: 'bg-red-100 text-red-700', label: 'Refunded' };
+      return { color: 'bg-red-100 text-red-700', label };
     default:
-      return { color: 'bg-gray-100 text-gray-700', label: status };
+      return { color: 'bg-gray-100 text-gray-700', label };
   }
 }
 

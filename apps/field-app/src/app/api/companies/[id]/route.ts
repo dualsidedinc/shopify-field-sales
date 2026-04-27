@@ -1,15 +1,11 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/db/prisma';
-import { getAuthContext, requireRole } from '@/lib/auth';
+import { getAuthContext } from '@/lib/auth';
+import { proxyToShopifyApp } from '@/services/shopifyAppClient';
 import type { ApiError } from '@/types';
 
 interface RouteParams {
   params: Promise<{ id: string }>;
-}
-
-interface UpdateCompanyRequest {
-  assignedRepId?: string | null;
-  territoryId?: string | null;
 }
 
 export async function GET(request: Request, { params }: RouteParams) {
@@ -107,66 +103,12 @@ export async function GET(request: Request, { params }: RouteParams) {
   }
 }
 
+/**
+ * PUT /api/companies/:id — proxy.
+ */
 export async function PUT(request: Request, { params }: RouteParams) {
-  try {
-    const { shopId } = await requireRole('ADMIN', 'MANAGER');
-    const { id } = await params;
-    const body = (await request.json()) as UpdateCompanyRequest;
-
-    // Verify company exists
-    const company = await prisma.company.findFirst({
-      where: { id, shopId },
-    });
-
-    if (!company) {
-      return NextResponse.json<ApiError>(
-        { data: null, error: { code: 'NOT_FOUND', message: 'Company not found' } },
-        { status: 404 }
-      );
-    }
-
-    // Validate assigned rep if provided
-    if (body.assignedRepId) {
-      const rep = await prisma.salesRep.findFirst({
-        where: { id: body.assignedRepId, shopId, isActive: true },
-      });
-
-      if (!rep) {
-        return NextResponse.json<ApiError>(
-          { data: null, error: { code: 'VALIDATION_ERROR', message: 'Invalid rep ID' } },
-          { status: 400 }
-        );
-      }
-    }
-
-    // Validate territory if provided
-    if (body.territoryId) {
-      const territory = await prisma.territory.findFirst({
-        where: { id: body.territoryId, shopId, isActive: true },
-      });
-
-      if (!territory) {
-        return NextResponse.json<ApiError>(
-          { data: null, error: { code: 'VALIDATION_ERROR', message: 'Invalid territory ID' } },
-          { status: 400 }
-        );
-      }
-    }
-
-    const updated = await prisma.company.update({
-      where: { id },
-      data: {
-        ...(body.assignedRepId !== undefined && { assignedRepId: body.assignedRepId }),
-        ...(body.territoryId !== undefined && { territoryId: body.territoryId }),
-      },
-    });
-
-    return NextResponse.json({ data: updated, error: null });
-  } catch (error) {
-    console.error('Error updating company:', error);
-    return NextResponse.json<ApiError>(
-      { data: null, error: { code: 'INTERNAL_ERROR', message: 'Failed to update company' } },
-      { status: 500 }
-    );
-  }
+  const auth = await getAuthContext();
+  const { id } = await params;
+  const body = await request.json().catch(() => ({}));
+  return proxyToShopifyApp(auth, `/api/internal/companies/${id}`, { method: 'PUT', body });
 }

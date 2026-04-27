@@ -1,14 +1,16 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/db/prisma';
-import { getAuthContext, requireRole } from '@/lib/auth';
+import { getAuthContext } from '@/lib/auth';
+import { proxyToShopifyApp } from '@/services/shopifyAppClient';
 import type {
   ApiError,
   TerritoryListItem,
-  TerritoryWithZipcodes,
-  CreateTerritoryRequest,
-  PaginatedResponse
+  PaginatedResponse,
 } from '@/types';
 
+/**
+ * GET /api/territories — read directly from DB.
+ */
 export async function GET(request: Request) {
   try {
     const { shopId } = await getAuthContext();
@@ -20,7 +22,6 @@ export async function GET(request: Request) {
     const activeOnly = searchParams.get('activeOnly') !== 'false';
 
     const skip = (page - 1) * pageSize;
-
     const where = {
       shopId,
       ...(activeOnly && { isActive: true }),
@@ -39,13 +40,7 @@ export async function GET(request: Request) {
         take: pageSize,
         orderBy: { name: 'asc' },
         include: {
-          _count: {
-            select: {
-              zipcodes: true,
-              repTerritories: true,
-              companies: true,
-            },
-          },
+          _count: { select: { zipcodes: true, repTerritories: true, companies: true } },
         },
       }),
       prisma.territory.count({ where }),
@@ -63,7 +58,6 @@ export async function GET(request: Request) {
     }));
 
     const totalPages = Math.ceil(totalItems / pageSize);
-
     const response: PaginatedResponse<TerritoryListItem> = {
       items,
       pagination: {
@@ -86,67 +80,11 @@ export async function GET(request: Request) {
   }
 }
 
+/**
+ * POST /api/territories — proxy.
+ */
 export async function POST(request: Request) {
-  try {
-    const { shopId } = await requireRole('ADMIN', 'MANAGER');
-    const body = (await request.json()) as CreateTerritoryRequest;
-
-    if (!body.name?.trim()) {
-      return NextResponse.json<ApiError>(
-        { data: null, error: { code: 'VALIDATION_ERROR', message: 'Territory name is required' } },
-        { status: 400 }
-      );
-    }
-
-    // Check for duplicate name
-    const existing = await prisma.territory.findFirst({
-      where: {
-        shopId,
-        name: { equals: body.name.trim(), mode: 'insensitive' },
-      },
-    });
-
-    if (existing) {
-      return NextResponse.json<ApiError>(
-        { data: null, error: { code: 'CONFLICT', message: 'A territory with this name already exists' } },
-        { status: 409 }
-      );
-    }
-
-    const territory = await prisma.territory.create({
-      data: {
-        shopId,
-        name: body.name.trim(),
-        description: body.description?.trim() || null,
-        isActive: true,
-        ...(body.zipcodes?.length && {
-          zipcodes: {
-            create: body.zipcodes.map((zipcode) => ({ zipcode: zipcode.trim() })),
-          },
-        }),
-      },
-      include: {
-        zipcodes: true,
-      },
-    });
-
-    const result: TerritoryWithZipcodes = {
-      id: territory.id,
-      shopId: territory.shopId,
-      name: territory.name,
-      description: territory.description,
-      isActive: territory.isActive,
-      createdAt: territory.createdAt,
-      updatedAt: territory.updatedAt,
-      zipcodes: territory.zipcodes.map((z) => z.zipcode),
-    };
-
-    return NextResponse.json({ data: result, error: null }, { status: 201 });
-  } catch (error) {
-    console.error('Error creating territory:', error);
-    return NextResponse.json<ApiError>(
-      { data: null, error: { code: 'INTERNAL_ERROR', message: 'Failed to create territory' } },
-      { status: 500 }
-    );
-  }
+  const auth = await getAuthContext();
+  const body = await request.json().catch(() => ({}));
+  return proxyToShopifyApp(auth, '/api/internal/territories', { method: 'POST', body });
 }
