@@ -29,7 +29,7 @@ const workers = KINDS.map((kind) => {
   const profile = KIND_PROFILES[kind];
 
   const worker = new Worker(
-    `queue:${kind}`,
+    `queue-${kind}`,
     async (bullJob) => {
       const queueJobId = (bullJob.data as { queueJobId: string }).queueJobId;
       const job = await prisma.queueJob.findUnique({ where: { id: queueJobId } });

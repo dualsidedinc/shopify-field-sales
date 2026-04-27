@@ -37,7 +37,7 @@ const queues: Partial<Record<QueueJobKind, Queue>> = {};
 
 export function getQueue(kind: QueueJobKind): Queue {
   if (!queues[kind]) {
-    queues[kind] = new Queue(`queue:${kind}`, {
+    queues[kind] = new Queue(`queue-${kind}`, {
       connection: getRedisConnection(),
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     });
