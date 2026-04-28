@@ -7,18 +7,20 @@
  */
 import { Worker } from "bullmq";
 import { prisma } from "@field-sales/database";
-import type { QueueJobKind } from "@prisma/client";
+import type { QueueJob, QueueJobKind } from "@prisma/client";
 import { getRedisConnection, KIND_PROFILES } from "./app/services/queue/queue.server";
 import { dispatchJob } from "./app/services/queue/registry.server";
 import { registerWebhookHandlers } from "./app/services/queue/handlers/webhooks.server";
+import { registerActionHandlers } from "./app/services/queue/handlers/actions.server";
+import { installSchedules } from "./app/services/queue/schedules.server";
 
 // ---------------------------------------------------------------------------
 // 1. Register every handler. Add new kinds/topics here as they're built.
 // ---------------------------------------------------------------------------
 registerWebhookHandlers();
+registerActionHandlers();
 // registerApiHandlers();        // future
 // registerFileImportHandlers(); // future
-// registerActionHandlers();     // future
 
 // ---------------------------------------------------------------------------
 // 2. Spawn one Worker per kind with its operational profile.
@@ -31,11 +33,37 @@ const workers = KINDS.map((kind) => {
   const worker = new Worker(
     `queue-${kind}`,
     async (bullJob) => {
-      const queueJobId = (bullJob.data as { queueJobId: string }).queueJobId;
-      const job = await prisma.queueJob.findUnique({ where: { id: queueJobId } });
-      if (!job) {
-        // Row was deleted (cleanup, manual, etc.) — drop silently
-        console.warn(`[Worker:${kind}] QueueJob ${queueJobId} not found, skipping`);
+      const data = bullJob.data as { queueJobId?: string; topic?: string };
+
+      // Two ways a job arrives:
+      //   1. enqueueJob() created a QueueJob row, BullMQ data has queueJobId.
+      //   2. A BullMQ Job Scheduler fired (cron) — no row exists yet, data
+      //      carries the topic. Create the row on first sight, keyed by the
+      //      bullJob id so a retry reuses the same row.
+      let job: QueueJob | null = null;
+      if (data.queueJobId) {
+        job = await prisma.queueJob.findUnique({ where: { id: data.queueJobId } });
+        if (!job) {
+          console.warn(`[Worker:${kind}] QueueJob ${data.queueJobId} not found, skipping`);
+          return;
+        }
+      } else if (data.topic && bullJob.id) {
+        const idempotencyKey = `bullmq:${bullJob.id}`;
+        job = await prisma.queueJob.upsert({
+          where: { kind_topic_idempotencyKey: { kind, topic: data.topic, idempotencyKey } },
+          update: {},
+          create: {
+            kind,
+            topic: data.topic,
+            idempotencyKey,
+            payload: {},
+            source: "schedule",
+          },
+        });
+      } else {
+        console.warn(
+          `[Worker:${kind}] BullMQ job ${bullJob.id} has no queueJobId or topic, skipping`
+        );
         return;
       }
 
@@ -108,5 +136,13 @@ async function shutdown(signal: string): Promise<void> {
 
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
+
+// ---------------------------------------------------------------------------
+// 4. Install scheduled (cron-style) jobs. Idempotent — safe to run on every
+//    boot. Failure here is non-fatal; the worker still consumes ad-hoc jobs.
+// ---------------------------------------------------------------------------
+installSchedules().catch((err) => {
+  console.error("[Worker] failed to install schedules:", err);
+});
 
 console.log(`[Worker] booted with ${workers.length} workers`);

@@ -186,16 +186,16 @@ export function ImagePicker({
   return (
     <div>
       <s-stack gap="small-200">
-        <s-text variant="bodyMd" fontWeight="semibold">{label}</s-text>
+        <s-text type="strong">{label}</s-text>
         {helpText && <s-text color="subdued">{helpText}</s-text>}
 
         {value ? (
           <s-box
             padding="base"
-            background="surface-secondary"
+            background="subdued"
             borderRadius="large"
             borderWidth="small"
-            borderColor="border"
+            borderColor="base"
           >
             <s-stack gap="base" alignItems="center">
               <img

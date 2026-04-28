@@ -1,4 +1,5 @@
 import { createRequestHandler } from "@react-router/express";
+import type { ServerBuild } from "react-router";
 import express from "express";
 
 const app = express();
@@ -15,7 +16,7 @@ app.use(express.static("build/client"));
 app.all(
   "*",
   createRequestHandler({
-    build: () => import("./build/server/index.js"),
+    build: () => import("./build/server/index.js") as unknown as Promise<ServerBuild>,
   })
 );
 

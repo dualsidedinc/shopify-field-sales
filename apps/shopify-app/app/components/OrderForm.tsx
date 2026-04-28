@@ -598,7 +598,7 @@ function ProductsSection({
               {lineItems.map((item) => (
                 <s-table-row key={item.id}>
                   <s-table-cell>
-                    <s-stack direction="inline" gap="small-200" alignItems="center" wrap="nowrap">
+                    <s-stack direction="inline" gap="small-200" alignItems="center">
                       {item.imageUrl ? (
                         <s-thumbnail src={item.imageUrl} alt={item.title} />
                       ) : (
@@ -618,7 +618,7 @@ function ProductsSection({
                           <s-badge>{item.variantTitle}</s-badge>
                         )}
                         {item.isFreeItem && item.promotionName && (
-                          <s-text color="subdued" type="caption">Free - {item.promotionName}</s-text>
+                          <s-text color="subdued">Free - {item.promotionName}</s-text>
                         )}
                       </s-stack>
                     </s-stack>

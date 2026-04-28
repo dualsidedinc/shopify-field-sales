@@ -3,7 +3,7 @@
  *
  * Provides comprehensive sync functionality for reconciling data between
  * Shopify and the local database. Can be triggered via:
- * - GitHub Actions API call (nightly)
+ * - Scheduled BullMQ job (`scheduled.nightly-sync`, see schedules.server.ts)
  * - Sync button in admin UI
  * - Order validation process
  */
@@ -319,7 +319,7 @@ export async function syncShop(
 
 /**
  * Sync all active shops
- * Used for nightly reconciliation via GitHub Actions
+ * Used for nightly reconciliation by the `scheduled.nightly-sync` BullMQ job.
  */
 export async function syncAllShops(
   options: SyncOptions = {}

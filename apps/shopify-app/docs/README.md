@@ -43,9 +43,11 @@ app/
 ├── routes/                       # React Router route files
 │   ├── app.*.tsx                # Embedded admin UI routes
 │   ├── api.internal.*.tsx       # Internal API for field-app proxy calls
-│   ├── api.cron.*.tsx           # Scheduled jobs
 │   └── webhooks.*.tsx           # Shopify webhook handlers
-├── services/                     # Business logic (shared by UI and internal API)
+├── services/
+│   └── queue/
+│       ├── schedules.server.ts  # BullMQ scheduled (cron-style) jobs
+│       └── handlers/            # Topic → handler routing for queue work
 ├── lib/
 │   └── internal-auth.server.ts  # Validates field-app proxy requests
 ├── components/                   # Shared components
@@ -94,7 +96,8 @@ Field-app proxies all mutations to `/api/internal/*` routes here. Each one valid
 **Other:**
 - `proxy.lead-form.tsx` - Public lead form (App Proxy)
 - `webhooks.*` - Shopify webhook handlers
-- `api.cron.*` - Scheduled jobs (cron secret auth)
+
+**Scheduled jobs:** registered in `app/services/queue/schedules.server.ts`, executed by the BullMQ worker. See [Scheduled Jobs](#scheduled-jobs-bullmq) below.
 
 ### Services
 | Service | Purpose |
@@ -113,18 +116,18 @@ Field-app proxies all mutations to `/api/internal/*` routes here. Each one valid
 | `metafield.server.ts` | Shopify metafield definitions and order metadata |
 | `webhook.server.ts` | Webhook processing |
 
-## Scheduled Jobs (GitHub Actions)
+## Scheduled Jobs (BullMQ)
 
-Located in `.github/workflows/`:
+Schedules live in `app/services/queue/schedules.server.ts` and are installed in Redis on every worker boot via `installSchedules()`. Each entry maps to an `ACTION`-kind handler in `app/services/queue/handlers/actions.server.ts`.
 
-| Workflow | Schedule | Description |
-|----------|----------|-------------|
-| `monthly-billing.yml` | 1st of month | Process monthly usage billing |
-| `daily-payments.yml` | Daily 6:00 UTC | Charge due orders / send invoices |
+| Topic | Schedule (UTC) | Description |
+|-------|----------------|-------------|
+| `scheduled.daily-payments` | `0 6 * * *` | Charge due orders / send invoices |
+| `scheduled.nightly-sync` | `0 2 * * *` | Pull companies/products/catalogs from Shopify |
+| `scheduled.queue-cleanup` | `0 3 * * *` | Prune COMPLETED/FAILED QueueJob rows |
+| `scheduled.monthly-billing` | `5 0 1 * *` | Report previous month's usage to Shopify |
 
-**Required Secrets:**
-- `SHOPIFY_APP_URL` - Your deployed app URL
-- `APP_SECRET` - Secret for authenticating cron requests
+To change a pattern: edit the registry, redeploy. To trigger by hand: enqueue an `ACTION` job with the matching topic via `enqueueJob()`.
 
 ## Development
 

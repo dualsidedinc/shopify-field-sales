@@ -1785,7 +1785,8 @@ export async function submitOrderForPayment(
   shopifyOrderNumber?: string;
   paymentStatus: ApprovalPaymentStatus;
 } | { success: false; error: string }> {
-  const { paymentMethodId, sendInvoice = true } = options;
+  let { paymentMethodId } = options;
+  const { sendInvoice = true } = options;
 
   // First, sync the order to Shopify (creates draft order)
   const syncResult = await syncOrderToShopifyDraft(shopId, orderId, admin);
@@ -1803,6 +1804,24 @@ export async function submitOrderForPayment(
 
   if (!order) {
     return { success: false, error: "Order not found after sync" };
+  }
+
+  // Reps don't pick a card on approve — fall back to the contact's default
+  // vaulted card so DUE_ON_ORDER / DUE_ON_FULFILLMENT auto-charges instead
+  // of emailing an invoice.
+  if (!paymentMethodId && order.contactId) {
+    const defaultCard = await prisma.paymentMethod.findFirst({
+      where: {
+        shopId,
+        contactId: order.contactId,
+        isDefault: true,
+        isActive: true,
+      },
+      select: { id: true },
+    });
+    if (defaultCard) {
+      paymentMethodId = defaultCard.id;
+    }
   }
 
   const paymentTerms = order.paymentTerms;

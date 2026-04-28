@@ -91,7 +91,10 @@
       "Bash(awk '/^export async function createSalesRep/,/^export async function/' /Users/jasonrichey/Documents/Apps/shopify-field-sales/apps/shopify-app/app/services/salesRep.server.ts)",
       "Bash(awk 'NR<954 || NR>1220' /Users/jasonrichey/Documents/Apps/shopify-field-sales/apps/shopify-app/app/services/billing.server.ts)",
       "Bash(mv /tmp/billing.server.new.ts /Users/jasonrichey/Documents/Apps/shopify-field-sales/apps/shopify-app/app/services/billing.server.ts)",
-      "Bash(queue:\" /Users/jasonrichey/Documents/Apps/shopify-field-sales/apps/shopify-app --include='*.ts' -n 2>/dev/null | grep -v node_modules)"
+      "Bash(queue:\" /Users/jasonrichey/Documents/Apps/shopify-field-sales/apps/shopify-app --include='*.ts' -n 2>/dev/null | grep -v node_modules)",
+      "Bash(grep -l \"bullmq\\\\|bull\\\\|ioredis\\\\|redis\\\\|pg-boss\" apps/*/package.json packages/*/package.json)",
+      "Bash(grep -hE \"\\\\\"\\(bullmq|ioredis|redis|pg-boss|@upstash/redis\\)\\\\\"\" apps/*/package.json packages/*/package.json)",
+      "Bash(awk -F'\\(' '{print $1}')"
     ]
   }
 }

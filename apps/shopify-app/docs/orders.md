@@ -394,11 +394,11 @@ interface PaymentMethod {
 }
 ```
 
-### Payment Processing Cron
+### Payment Processing Job
 
-A GitHub Actions workflow runs daily to process due orders:
+A BullMQ scheduled job runs daily to process due orders:
 
-**File**: `.github/workflows/daily-payments.yml`
+**Registry**: `app/services/queue/schedules.server.ts` (key: `daily-payments`)
 
 **Schedule**: Daily at 6:00 UTC (1am EST)
 
@@ -412,15 +412,18 @@ A GitHub Actions workflow runs daily to process due orders:
    - Send invoice via `draftOrderInvoiceSend`
    - Store `shopifyInvoiceId` for tracking
 
-**API Endpoint**: `POST /api/cron/payments`
+**Schedule**: registered in `app/services/queue/schedules.server.ts` as `scheduled.daily-payments` (cron `0 6 * * *` UTC). Handler: `app/services/queue/handlers/actions.server.ts`. Underlying logic: `processDuePayments()` in `app/services/payments.server.ts`.
 
-```bash
-# Manual trigger (requires APP_SECRET)
-curl -X POST https://your-app.fly.dev/api/cron/payments \
-  -H "x-app-secret: $APP_SECRET"
+To trigger ad-hoc (e.g., from an admin route or shell):
 
-# Check due orders without processing
-curl "https://your-app.fly.dev/api/cron/payments?secret=$APP_SECRET"
+```ts
+import { enqueueJob } from "~/services/queue/enqueue.server";
+await enqueueJob({
+  kind: "ACTION",
+  topic: "scheduled.daily-payments",
+  payload: {},
+  source: "manual:admin",
+});
 ```
 
 ### Data Sources

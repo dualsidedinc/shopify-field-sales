@@ -136,14 +136,9 @@ model BillingEvent {
 
 The unique index `(shopId, orderId, type, occurredAt)` makes webhook handlers idempotent — duplicate Shopify retries are no-ops.
 
-### Monthly cron
+### Monthly job
 
-```yaml
-# .github/workflows/monthly-billing.yml
-on:
-  schedule:
-    - cron: '5 0 1 * *'  # 1st of every month at 00:05 UTC
-```
+Registered as a BullMQ scheduled job (`scheduled.monthly-billing`) in `app/services/queue/schedules.server.ts` with cron pattern `5 0 1 * *` (1st of each month at 00:05 UTC). Runs in the `field-sales-queue-worker` Render service.
 
 For each shop with an active plan, `reportMonthlyUsageForShop`:
 
@@ -338,28 +333,22 @@ session inline (auth-critical) AND enqueues the business-side cleanup
 | `app.billing._index.tsx` | Billing dashboard |
 | `app.billing.subscribe.tsx` | Plan selection |
 | `app.billing.callback.tsx` | Post-approval callback |
-| `api.cron.billing.tsx` | Daily usage reporting endpoint |
 
-## Cron Endpoint
+## Scheduled Job
 
-The daily billing cron is protected by `APP_SECRET`:
+Monthly usage reporting runs as a BullMQ scheduled job, not an HTTP endpoint. Schedule key `monthly-billing` in `app/services/queue/schedules.server.ts` (cron `5 0 1 * *` UTC, i.e., 00:05 on the 1st). Handler: `handleMonthlyBilling` in `app/services/queue/handlers/actions.server.ts`.
 
 ```typescript
-// api.cron.billing.tsx
-export const action = async ({ request }: ActionFunctionArgs) => {
-  const secret = request.headers.get("x-app-secret");
-  if (APP_SECRET && secret !== APP_SECRET) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-
+// app/services/queue/handlers/actions.server.ts (excerpt)
+const handleMonthlyBilling: JobHandler = async () => {
+  const now = new Date();
   const shops = await getShopsForDailyUsageReporting();
 
   for (const shop of shops) {
     const { admin } = await unauthenticated.admin(shop.shopifyDomain);
-    await reportDailyUsageForShop(shop.id, admin);
+    // ...sync usage line item id if missing, then:
+    await reportMonthlyUsageForShop(shop.id, admin, now);
   }
-
-  return Response.json({ success: true, ... });
 };
 ```
 
@@ -517,21 +506,10 @@ if (shouldBypassShopifyBilling()) {
 shopify app deploy
 ```
 
-### 2. Set GitHub Secrets
-
-For the daily billing GitHub Action:
-
-| Secret | Description |
-|--------|-------------|
-| `SHOPIFY_APP_URL` | Your app's production URL (e.g., `https://your-app.fly.dev`) |
-| `APP_SECRET` | Secret key to protect the cron endpoint |
-
-### 3. Environment Variables
+### 2. Environment Variables
 
 ```bash
 # .env
-APP_SECRET=your-secret-key-here
-
 # App handle for billing callback URLs (must match Partner Dashboard)
 # Production: field-sales-manager
 # Development: field-sales-manager-dev
@@ -540,6 +518,8 @@ SHOPIFY_APP_HANDLE=field-sales-manager
 # Optional: For custom distributions only
 # BYPASS_SHOPIFY_BILLING=true
 ```
+
+The monthly billing job runs inside the BullMQ worker (`field-sales-queue-worker` Render service). No HTTP secret is required — the worker pulls jobs from Redis directly.
 
 ### App Handle Configuration
 
@@ -573,14 +553,21 @@ await createBillingSubscription(shopId, plan, admin, returnUrl, true);
 
 Test subscriptions don't charge real money.
 
-### Testing Daily Billing
+### Testing Monthly Billing
 
-Trigger manually via GitHub Actions "Run workflow" or:
+Trigger ad-hoc by enqueueing the action from a Node REPL or admin route:
 
-```bash
-curl -X POST "https://your-app.fly.dev/api/cron/billing" \
-  -H "x-app-secret: your-secret"
+```ts
+import { enqueueJob } from "~/services/queue/enqueue.server";
+await enqueueJob({
+  kind: "ACTION",
+  topic: "scheduled.monthly-billing",
+  payload: {},
+  source: "manual:admin",
+});
 ```
+
+The job runs in the worker process — tail its logs to see per-shop progress.
 
 ## Idempotency
 

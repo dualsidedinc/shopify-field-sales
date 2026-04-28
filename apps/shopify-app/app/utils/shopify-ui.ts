@@ -4,18 +4,6 @@
  * @see https://shopify.dev/docs/api/app-home/apis/user-interface-and-interactions/save-bar-api
  */
 
-// JSX intrinsic element types for Shopify App Bridge components
-declare global {
-  namespace JSX {
-    interface IntrinsicElements {
-      "ui-save-bar": React.DetailedHTMLProps<
-        React.HTMLAttributes<HTMLElement> & { id: string },
-        HTMLElement
-      >;
-    }
-  }
-}
-
 export interface ToastOptions {
   /** Action button label */
   action?: string;

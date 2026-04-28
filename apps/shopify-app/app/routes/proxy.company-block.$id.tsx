@@ -12,6 +12,9 @@ import { fromGid } from "../lib/shopify-ids";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.public.appProxy(request);
+  if (!session) {
+    return Response.json({ error: "Unauthenticated" }, { status: 401 });
+  }
 
   const companyIdParam = params.id;
   if (!companyIdParam) {

@@ -279,7 +279,7 @@ export default function LeadFormBuilderPage() {
           {activeFields.length > 0 ? (
             <s-table>
               <s-table-header-row>
-                <s-table-header style={{ width: "70px" }}>Order</s-table-header>
+                <s-table-header>Order</s-table-header>
                 <s-table-header>Label</s-table-header>
                 <s-table-header>Name</s-table-header>
                 <s-table-header>Type</s-table-header>
@@ -295,7 +295,6 @@ export default function LeadFormBuilderPage() {
                         <s-button
                           variant="tertiary"
                           icon="chevron-up"
-                          size="slim"
                           accessibilityLabel="Move up"
                           disabled={index === 0}
                           onClick={() => handleMoveField(field.id, "up")}
@@ -303,7 +302,6 @@ export default function LeadFormBuilderPage() {
                         <s-button
                           variant="tertiary"
                           icon="chevron-down"
-                          size="slim"
                           accessibilityLabel="Move down"
                           disabled={index === activeFields.length - 1}
                           onClick={() => handleMoveField(field.id, "down")}

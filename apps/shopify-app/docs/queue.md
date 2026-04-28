@@ -163,7 +163,8 @@ Postgres write — fast enough that inline never bottlenecks.
 
 ## Cleanup
 
-`api.cron.queue-cleanup` (daily at 03:00 UTC via GitHub Actions) prunes:
+The `scheduled.queue-cleanup` BullMQ job (daily at 03:00 UTC, registered in
+`app/services/queue/schedules.server.ts`) prunes:
 - `COMPLETED` rows older than 30 days
 - `FAILED` rows older than 90 days
 
