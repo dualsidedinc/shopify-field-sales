@@ -214,10 +214,29 @@ export async function syncCompanyLocationCatalogs(
           };
         };
       };
+      errors?: Array<{ message: string; extensions?: Record<string, unknown>; path?: unknown }>;
+      extensions?: Record<string, unknown>;
     } = await response.json();
+
+    if (result.errors?.length) {
+      console.error(
+        `[Catalog Sync] GraphQL errors for location ${shopifyLocationId}:`,
+        JSON.stringify(result.errors, null, 2)
+      );
+      return {
+        success: false,
+        error: result.errors.map((e) => e.message).join("; "),
+      };
+    }
 
     const catalogs = result.data?.companyLocation?.catalogs?.nodes || [];
     console.log(`[Catalog Sync] Found ${catalogs.length} catalogs for location`);
+    if (catalogs.length === 0) {
+      console.log(
+        `[Catalog Sync] Location ${shopifyLocationId} response shape:`,
+        JSON.stringify({ data: result.data, extensions: result.extensions }, null, 2)
+      );
+    }
 
     // Process each catalog
     const catalogIds: string[] = [];
@@ -494,7 +513,7 @@ export async function syncAllShopCatalogs(
 
       const result: {
         data?: {
-          catalogs: {
+          catalogs?: {
             pageInfo: {
               hasNextPage: boolean;
               endCursor: string | null;
@@ -502,10 +521,23 @@ export async function syncAllShopCatalogs(
             nodes: ShopifyCatalog[];
           };
         };
+        errors?: Array<{ message: string; extensions?: Record<string, unknown>; path?: unknown }>;
+        extensions?: Record<string, unknown>;
       } = await response.json();
 
+      if (result.errors?.length) {
+        console.error("[Catalog Sync] GraphQL errors:", JSON.stringify(result.errors, null, 2));
+        return { success: false, error: result.errors.map((e) => e.message).join("; ") };
+      }
+
       const catalogs = result.data?.catalogs;
-      if (!catalogs) break;
+      if (!catalogs) {
+        console.warn(
+          "[Catalog Sync] catalogs missing from response — full payload:",
+          JSON.stringify({ data: result.data, extensions: result.extensions }, null, 2)
+        );
+        break;
+      }
 
       for (const shopifyCatalog of catalogs.nodes) {
         await syncCatalog(shopId, shopifyCatalog, admin);
