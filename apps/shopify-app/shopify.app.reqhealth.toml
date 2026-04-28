@@ -11,9 +11,9 @@ api_version = "2026-04"
   [[webhooks.subscriptions]]
   uri = "/webhooks/company-locations"
   topics = [
+  "company_locations/delete",
   "company_locations/create",
-  "company_locations/update",
-  "company_locations/delete"
+  "company_locations/update"
 ]
 
   [[webhooks.subscriptions]]
@@ -30,7 +30,7 @@ api_version = "2026-04"
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_companies,read_customers,read_files,read_orders,read_products,write_app_proxy,write_companies,write_draft_orders,write_orders,write_payment_mandate"
+scopes = "read_companies,read_customer_payment_methods,read_customers,read_files,read_orders,read_products,write_companies,write_draft_orders,write_files,write_orders,write_payment_mandate"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
